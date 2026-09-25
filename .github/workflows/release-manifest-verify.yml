@@ -1,0 +1,32 @@
+name: Release Manifest Verify
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'releases/**'
+      - 'scripts/verify-release-manifest.py'
+      - '.github/workflows/release-manifest-verify.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  release-manifest-verify:
+    name: release-manifest-verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify immutable product release manifest policy
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 scripts/verify-release-manifest.py \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA"
