@@ -1,0 +1,106 @@
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '4.1.1'
+	id 'io.spring.dependency-management' version '1.1.7'
+	id 'com.github.spotbugs' version '6.5.11'
+}
+
+group = 'com.guardbench'
+version = '0.0.1-SNAPSHOT'
+description = 'GuardBench Backend'
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+	implementation 'org.springframework.boot:spring-boot-starter-flyway'
+	implementation 'org.springframework.boot:spring-boot-starter-validation'
+	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+	implementation 'software.amazon.awssdk:sagemakerruntime:2.54.3'
+	implementation 'software.amazon.awssdk:sqs:2.54.3'
+	developmentOnly 'org.springframework.boot:spring-boot-docker-compose'
+	runtimeOnly 'org.flywaydb:flyway-database-postgresql'
+	runtimeOnly 'org.postgresql:postgresql'
+	testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test:4.1.1'
+	testImplementation 'org.springframework.boot:spring-boot-starter-validation-test'
+	testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+	testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+	testImplementation 'com.tngtech.archunit:archunit:1.5.0'
+	testImplementation 'org.testcontainers:testcontainers-postgresql'
+	testImplementation 'org.testcontainers:testcontainers-localstack:2.0.5'
+	testImplementation 'org.mock-server:mockserver-netty:7.6.0'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+spotbugs {
+	toolVersion = '4.10.4'
+	ignoreFailures = true
+}
+
+tasks.withType(com.github.spotbugs.snom.SpotBugsTask).configureEach {
+	reports {
+		html {
+			required = true
+		}
+		xml {
+			required = true
+		}
+	}
+}
+
+def spotbugsMainOnlyAnalyze = providers.environmentVariable('SPOTBUGS_MAIN_ONLY_ANALYZE')
+	.map { raw -> raw.split(',').collect { it.trim() }.findAll { !it.isEmpty() } }
+
+def spotbugsTestOnlyAnalyze = providers.environmentVariable('SPOTBUGS_TEST_ONLY_ANALYZE')
+	.map { raw -> raw.split(',').collect { it.trim() }.findAll { !it.isEmpty() } }
+
+tasks.named('spotbugsMain', com.github.spotbugs.snom.SpotBugsTask) {
+	if (spotbugsMainOnlyAnalyze.isPresent()) {
+		onlyAnalyze.set(spotbugsMainOnlyAnalyze)
+	}
+}
+
+tasks.named('spotbugsTest', com.github.spotbugs.snom.SpotBugsTask) {
+	if (spotbugsTestOnlyAnalyze.isPresent()) {
+		onlyAnalyze.set(spotbugsTestOnlyAnalyze)
+	}
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+}
+
+def integrationTestPatterns = [
+	'**/*IntegrationTest.class',
+	'**/*E2eTest.class',
+	'**/*EndToEndTest.class',
+	'**/GuardbenchBackendApplicationTests.class',
+]
+
+tasks.register('testFast', Test) {
+	group = 'verification'
+	description = 'Runs unit, controller, and contract tests without external containers.'
+	dependsOn tasks.named('testClasses')
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform()
+	exclude integrationTestPatterns
+}
+
+tasks.register('integrationTest', Test) {
+	group = 'verification'
+	description = 'Runs PostgreSQL, SQS, and end-to-end integration tests.'
+	dependsOn tasks.named('testClasses')
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform()
+	include integrationTestPatterns
+}

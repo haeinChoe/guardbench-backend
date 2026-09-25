@@ -1,0 +1,28 @@
+package com.guardbench.testrun.application.port.out;
+
+import com.guardbench.testrun.domain.Action;
+import com.guardbench.testrun.domain.TestExecutionStatus;
+
+public record TestExecutionView(
+        TestExecutionStatus status,
+        Action evaluatorVerdict,
+        String failureStage,
+        String errorCode,
+        String errorMessage) {
+
+    public TestExecutionView {
+        if (status == null) {
+            throw new IllegalArgumentException("execution status must not be null");
+        }
+        if (status == TestExecutionStatus.SUCCEEDED && evaluatorVerdict == null) {
+            throw new IllegalArgumentException("successful execution requires evaluatorVerdict");
+        }
+        if (status != TestExecutionStatus.SUCCEEDED && evaluatorVerdict != null) {
+            throw new IllegalArgumentException("non-success execution cannot have evaluatorVerdict");
+        }
+        if ((errorCode == null) != (errorMessage == null)) {
+            throw new IllegalArgumentException("execution error code and message must be paired");
+        }
+    }
+
+}

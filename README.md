@@ -1,273 +1,324 @@
 # GuardBench Backend
 
-> Amazon Bedrock Guardrails 정책 변경을 안전하게 검증하기 위한 AI Security Regression Test Platform
+> **Portfolio fork**  
+> 이 저장소는 팀 프로젝트 `GuardBench/guardbench-backend`를 개인 포트폴리오용으로 fork한 저장소입니다.  
+> 서비스의 설계·구현은 팀의 공동 결과물이며, 이 README는 실제 코드와 승인된 문서를 기준으로 Backend의 문제 해결 과정과 기술적 판단이 빠르게 드러나도록 재구성했습니다.
 
-GuardBench는 운영 중인 **Baseline Guardrail**과 배포 후보 **Candidate Guardrail**에 동일한 Safety Test Suite를 실행하고, 정책 변경으로 인해 발생한 기대 동작 위반과 회귀를 분석하는 테스트 플랫폼입니다.
+GuardBench는 **AI Application의 응답 행동을 반복 가능한 테스트 자산으로 검증하고, 배포 후보 간 Regression을 추적하는 테스트 플랫폼**입니다.
 
-단순히 두 결과의 차이를 비교하는 데 그치지 않고, 사람이 정의한 Expected Result를 기준으로 Candidate의 요구사항 충족 여부를 검증하고, Baseline 대비 변화가 보안 회귀인지 사용성 회귀인지 구분합니다.
-
-MVP는 Amazon Bedrock Guardrails를 System Under Test(SUT)로 사용하며, 고객센터 챗봇을 Reference Domain으로 제공합니다. GuardBench Core 자체는 특정 비즈니스 도메인에 종속되지 않도록 설계되었습니다.
-
----
-
-## 주요 기능
-
-- **Safety Test Suite 관리**
-  - Test Suite, Test Case, Test Case Revision 기반 테스트 정의
-  - 입력, Expected Result, Severity, Category 등 테스트 정책 관리
-
-- **재현 가능한 Test Run**
-  - 실행 시점의 Test Case Revision을 Snapshot으로 고정
-  - Baseline과 Candidate가 동일한 Snapshot을 공유
-  - 실제 실행할 Guardrail Target을 Test Run 시작 전에 고정
-
-- **Candidate Materialization**
-  - 배포 후보 Working Draft(DRAFT)를 numbered Guardrail Version으로 materialize
-  - 테스트한 Candidate와 실제 배포 Candidate가 동일하도록 `Test what you deploy` 원칙 적용
-
-- **Candidate Assertion**
-  - Expected Result와 Candidate Actual Result 비교
-  - Candidate가 정의된 기대 동작을 충족하는지 PASS / FAIL 판정
-
-- **Regression Analysis**
-  - Baseline과 Candidate의 비교 가능 여부를 별도로 확인
-  - Comparable한 결과에 대해 보안 회귀, 사용성 회귀, 개선 등의 변화 유형 분류
-
-- **Execution Reliability 관리**
-  - Guardrail API 오류, 네트워크 오류, timeout 등 실행 실패를 정책 판정과 분리
-  - 신뢰할 수 없는 Test Run은 Quality Gate의 정책 품질 PASS / FAIL로 오판하지 않음
-
-- **Quality Gate**
-  - Assertion 및 Regression Metrics를 집계
-  - Severity와 정책 임계값을 기준으로 최종 PASS / FAIL / NOT_EVALUATED 판정
+OpenAI-compatible AI Application을 실행한 뒤 Response Behavior Classifier가 자연어 응답을 `ALLOW | BLOCK`으로 정규화하고, Expected Result와 비교해 Assertion·Quality Gate·Regression 결과를 만듭니다.
 
 ---
 
-## 핵심 개념
+## 왜 만들었나
 
-| 개념 | 설명 |
-| --- | --- |
-| **Baseline** | 현재 운영 기준으로 사용하는 immutable numbered Guardrail Version |
-| **Candidate** | 이번 Test Run에서 검증하는 배포 후보 Target |
-| **Test Case Revision** | 특정 시점의 실행 가능한 테스트 정의 버전 |
-| **Test Case Snapshot** | Test Run 시작 시 Revision의 내용을 고정한 실행용 Snapshot |
-| **Assertion** | Expected Result와 Candidate Actual Result 비교 |
-| **Comparability** | Baseline과 Candidate를 공정하게 직접 비교할 수 있는지 판단 |
-| **Change Classification** | Comparable한 경우 변화의 의미를 분류 |
-| **Quality Gate** | Test Run 전체 결과를 기준으로 배포 가능 여부를 판단 |
+AI Application의 안전성을 수동 프롬프트 테스트만으로 확인하면 다음 문제가 생깁니다.
 
----
+- 같은 정책을 반복해서 검증하기 어렵습니다.
+- Application이나 평가 설정이 바뀌었을 때 과거 결과와 비교하기 어렵습니다.
+- 자연어 응답과 “기대했던 행동”을 분리해 기록하지 않으면 실패 원인을 추적하기 어렵습니다.
+- 비동기 대량 실행에서는 retry, duplicate delivery, timeout이 테스트 결과 자체를 왜곡할 수 있습니다.
 
-## 동작 흐름
+GuardBench Backend는 이를 위해 **테스트 정의와 실행 시점 Snapshot을 분리하고, 실행 결과를 저장한 뒤, Assertion과 Regression을 서로 다른 개념으로 계산**합니다.
+
+## 핵심 흐름
 
 ```text
-Test Run 생성
-    ↓
-Baseline Target Resolution
-    ↓
-Candidate Materialization
-    ↓
-Test Case Revision 선택 및 Snapshot 생성
-    ↓
-Baseline / Candidate Execution
-    ↓
-Result Normalization
-    ├─ Candidate Assertion
-    └─ Comparability Check
-           ↓
-       Change Classification
-    ↓
-Metrics Aggregation
-    ↓
-Execution Reliability 확인
-    ↓
-Quality Gate
+TestSuite / TestCase
+        │
+        │ TestRun 생성
+        ▼
+TestCaseSnapshot 고정
+        │
+        ▼
+OpenAI-compatible AI Application 실행
+        │
+        ▼
+Natural Language ApplicationResponse
+        │
+        ▼
+Response Behavior Classifier
+        │
+        ▼
+EvaluationResult (ALLOW | BLOCK)
+        │
+        ├── ExpectedResult와 비교 ──> AssertionResult
+        │                              │
+        │                              └──> QualityGateResult
+        │
+        └── 완료된 다른 TestRun의 저장 결과와 비교 ──> RegressionResult
 ```
 
-GuardBench는 Amazon Bedrock의 원본 응답을 판정 로직에서 직접 사용하지 않습니다. Bedrock Adapter와 Result Normalizer를 통해 Core가 사용하는 `ActualResult`로 변환한 뒤 Assertion과 Change Classification을 수행합니다.
+### Assertion과 Regression을 분리한 이유
+
+GuardBench에서 두 질문은 다릅니다.
+
+```text
+Assertion
+"이번 Candidate가 기대한 정책을 만족했는가?"
+
+Regression
+"비교 가능한 과거 Run과 비교해 행동이 어떻게 바뀌었는가?"
+```
+
+따라서 Candidate가 기대값을 만족하는지와, 이전 버전 대비 변화가 생겼는지를 별도 결과로 다룹니다.
 
 ---
 
-## 기술 구성
+## Backend 설계
 
-### Backend
+### 1. 실행 시점의 테스트 정의를 Snapshot으로 고정
 
-- Java
-- Spring Boot
-- Gradle
+`TestCase`는 계속 수정 가능한 자산입니다. 반면 과거 TestRun의 의미는 이후 편집 때문에 바뀌면 안 됩니다.
 
-### AWS
+그래서 TestRun을 접수할 때 `TestCaseSnapshot`을 생성합니다.
 
-- Amazon Bedrock Guardrails
-- AWS SDK for Java
-- Amazon SQS
+```text
+Mutable TestCase
+      │
+      │ TestRun 생성
+      ▼
+Immutable TestCaseSnapshot
+      │
+      └── execution / assertion / regression의 기준
+```
 
-### Persistence
+원본 TestCase가 수정되거나 삭제되어도 과거 Snapshot과 실행 결과는 유지됩니다.
 
-- Relational Database
-- Test Run, Snapshot, Execution 및 평가 결과에 대한 Audit History 보존
+→ [핵심 도메인 모델](docs/domain/core-model.md)
 
-비동기 실행 인프라와 Core Domain 로직을 분리하여, 실행 방식이 변경되더라도 Assertion, Comparability, Change Classification, Quality Gate 규칙이 영향을 받지 않도록 구성합니다.
+### 2. AI Application과 평가기를 분리
+
+Application Target은 자연어 응답을 생성할 뿐 `ALLOW | BLOCK`을 직접 결정하지 않습니다.
+
+현재 MVP에서는:
+
+- Application Target: OpenAI-compatible `HTTP_ENDPOINT`
+- Evaluator: Amazon SageMaker Runtime의 Response Behavior Classifier
+- Classifier output: `COMPLY | REFUSE`
+- GuardBench normalization: `ALLOW | BLOCK`
+
+으로 역할을 분리했습니다.
+
+이를 통해 **서비스 응답 자체와 평가 결과를 동일한 값으로 취급하지 않도록 경계**를 만들었습니다.
+
+→ [Response Behavior Classifier Adapter](docs/integrations/sagemaker-classifier-adapter.md)
+
+### 3. 비동기 실행은 SQS delivery와 business retry를 분리
+
+TestRun은 SQS와 Worker를 이용해 비동기로 실행됩니다.
+
+개발 환경에서 실제로 다음과 같은 terminal convergence 문제가 관측됐습니다.
+
+```text
+expected snapshots = 78
+terminal executions = 76
+
+SQS receive count ≠ Provider invocation count
+finalization retry 누적
+→ 일부 메시지 DLQ 이동
+→ TestRun이 RUNNING에 잔류
+```
+
+이 문제를 분석하면서 lifecycle을 세 층으로 분리했습니다.
+
+| Lifecycle | 의미 |
+| --- | --- |
+| SQS delivery | 메시지 전달, visibility timeout, redrive |
+| Worker claim | 동일 Snapshot의 동시 실행 방지 |
+| Provider execution | 실제 외부 Application/Evaluator 호출과 business retry |
+
+핵심 원칙은 **메시지가 다시 전달됐다는 이유만으로 Provider 시도 횟수를 증가시키지 않는 것**입니다.
+
+또한 `AlreadyHeld`, partial finalization 같은 정상 중간 상태를 business failure로 취급하지 않고, 모든 실행이 결국 terminal 상태로 수렴하는지를 별도 검증 대상으로 둡니다.
+
+→ [비동기 신뢰성 및 테스트 원칙](docs/architecture/async-reliability-and-testing.md)
+
+### 4. 실행 결과를 재호출하지 않고 저장 결과로 비교
+
+Regression 시 외부 Application이나 Evaluator를 다시 호출하면 비교 시점이 달라져 재현성이 깨집니다.
+
+GuardBench는 완료된 TestRun에 저장된:
+
+- Snapshot 정의
+- Application response
+- Evaluator verdict
+- Assertion 결과
+
+를 기반으로 비교합니다.
+
+따라서 Regression 조회 자체가 외부 AI Provider의 현재 상태에 의존하지 않습니다.
+
+→ [TestRun Persistence](docs/architecture/testrun-persistence.md)
+
+### 5. Domain · DB · API 계약을 같은 불변식으로 유지
+
+실행 결과는 상태에 따라 허용되는 shape가 다릅니다.
+
+| executionStatus | error |
+| --- | --- |
+| `SUCCEEDED` | `null` |
+| `FAILED` | `{ stage, code, message }` 필수 |
+| `TIMED_OUT` | error 필수, `code=PROVIDER_TIMEOUT` |
+| `NOT_STARTED` | `null` |
+
+이 규칙을 Java Domain뿐 아니라 PostgreSQL CHECK, Persistence Mapper, integration test, OpenAPI 문서까지 맞추도록 관리합니다.
+
+이는 “DB에는 저장되지만 Domain으로 복원할 수 없는 상태”를 방지하기 위한 계약입니다.
+
+→ [API 계약](docs/api/README.md)  
+→ [Evaluation Contract](docs/domain/evaluation-contract.md)
 
 ---
 
-## 사용 방법
+## 포트폴리오에서 강조하는 Backend 문제 해결 영역
 
-### 1. 사전 준비
+이 fork에서는 단순 기능 목록보다 다음 기술적 판단과 개선 과정을 중심으로 살펴볼 수 있습니다.
 
-GuardBench를 실행하기 전에 다음 항목이 필요합니다.
+### 비동기 신뢰성과 수렴성
 
-- AWS 계정 및 사용 가능한 자격 증명
-- Amazon Bedrock Guardrails 사용 권한
-- 테스트할 Guardrail과 운영 Baseline Version
-- Candidate로 사용할 Guardrail configuration
-- 애플리케이션에서 사용할 Database 및 AWS 환경 설정
+- SQS delivery retry와 Provider business retry 분리
+- Worker claim lease를 통한 중복 실행 제어
+- Outbox 기반 비동기 이벤트 전달
+- duplicate delivery와 partial finalization을 고려한 idempotence
+- 개별 상태 전이뿐 아니라 **eventual convergence**를 테스트 기준으로 정의
 
-### 2. 프로젝트 실행
+### 데이터와 실행 재현성
 
-저장소를 clone한 후 Gradle을 이용해 애플리케이션을 실행합니다.
+- TestRun 시점에 TestCaseSnapshot 고정
+- 현재 편집 자산과 historical execution identity 분리
+- 완료 Run의 stored result만으로 Regression 계산
+- Quality Gate 판정 당시 threshold와 metric을 함께 보존
+
+### 계약 정합성
+
+- Domain invariant와 DB CHECK constraint 정렬
+- Persistence 복원 시 invalid state를 명시적 오류로 진단
+- OpenAPI와 실제 상태별 nullable 규칙 동기화
+- 공개 API와 내부 Domain Enum을 경계에서 명시적으로 변환
+
+### 개발 품질과 검증
+
+- ArchUnit으로 Context/architecture rule 검증
+- Qodana JVM Community + SpotBugs 정적 분석
+- PR에서는 변경 Java 범위 중심 분석
+- 전체 정적 분석은 수동 workflow로 분리
+- 단위/계약 테스트와 Testcontainers 기반 integration test 분리
+
+---
+
+## 기술 스택
+
+| 영역 | 기술 |
+| --- | --- |
+| Language | Java 21 |
+| Framework | Spring Boot |
+| Build | Gradle |
+| Database | PostgreSQL, Flyway |
+| Messaging | Amazon SQS |
+| AI Evaluation | Amazon SageMaker Runtime |
+| Application Target | OpenAI-compatible HTTP API |
+| Test | JUnit, Testcontainers, LocalStack, ArchUnit |
+| Static Analysis | Qodana JVM Community, SpotBugs |
+| CI | GitHub Actions |
+| Observability | Amazon CloudWatch |
+| Packaging | Docker |
+
+---
+
+## 검증 전략
+
+테스트를 목적에 따라 분리했습니다.
+
+```text
+testFast
+├─ unit test
+├─ controller test
+└─ contract test
+
+integrationTest
+├─ PostgreSQL Testcontainers
+├─ SQS / LocalStack
+├─ persistence integration
+└─ async / E2E integration
+```
+
+PR CI에서는 `testFast`, `integrationTest`, `bootJar`를 독립적으로 실행하고 aggregate verification에서 결과를 확인합니다.
+
+정적 분석은 개발 피드백 속도를 위해 PR 변경분 중심으로 수행하고, repository 전체 분석은 별도 수동 workflow로 실행할 수 있도록 분리했습니다.
+
+---
+
+## 로컬 실행
+
+### 요구사항
+
+- JDK 21
+- Docker daemon
+- 저장소에 포함된 Gradle Wrapper
+
+로컬 환경 파일을 준비합니다.
 
 ```bash
-git clone https://github.com/GuardBench/guardbench-backend.git
-cd guardbench-backend
+cp .env.example .env
+```
+
+Spring Boot 실행:
+
+```bash
 ./gradlew bootRun
 ```
 
-Windows 환경에서는 다음 명령을 사용할 수 있습니다.
+`bootRun` 시 Spring Boot Docker Compose 지원이 `compose.yaml`의 PostgreSQL을 시작하고 Flyway migration을 적용합니다.
 
-```powershell
-.\gradlew.bat bootRun
+### 테스트
+
+빠른 테스트:
+
+```bash
+./gradlew testFast
 ```
 
-### 3. Safety Test Suite 준비
+통합 테스트:
 
-검증하려는 정책에 맞는 Test Suite와 Test Case를 등록합니다.
+```bash
+./gradlew integrationTest
+```
 
-각 Test Case Revision에는 최소한 다음과 같은 테스트 정보가 포함됩니다.
+전체 테스트:
 
-- 입력 데이터
-- Expected Result
-- Severity
-- Category
+```bash
+./gradlew clean test
+```
 
-도메인별 정책은 GuardBench Core의 조건문으로 구현하지 않고 Test Case 데이터로 표현합니다.
+실행 가능한 JAR:
 
-### 4. Test Run 실행
-
-Test Run을 생성하면 GuardBench는 다음 과정을 수행합니다.
-
-1. Baseline Guardrail Version을 확인합니다.
-2. Candidate configuration을 immutable numbered Version으로 고정합니다.
-3. 실행 대상 Test Case Revision을 Snapshot으로 생성합니다.
-4. 동일 Snapshot을 Baseline과 Candidate에 각각 실행합니다.
-5. Candidate Assertion과 Baseline 대비 변화 분석을 수행합니다.
-6. 결과 Metrics를 집계하고 Quality Gate를 계산합니다.
-
-### 5. 결과 확인
-
-Test Run 결과에서는 다음 항목을 확인할 수 있습니다.
-
-- Candidate Assertion 결과
-- Baseline / Candidate Execution 상태
-- Comparability Status
-- Change Type
-- Security / Usability Regression Metrics
-- Execution Reliability
-- 최종 Quality Gate 결과
+```bash
+./gradlew bootJar
+```
 
 ---
 
-## 판정 모델
+## 문서 탐색
 
-GuardBench는 실행 결과를 하나의 PASS / FAIL 또는 Regression 상태로 단순화하지 않습니다.
-
-### Assertion
-
-```text
-Expected Result + Candidate Actual Result
-→ PASS / FAIL
-```
-
-Candidate 자체가 요구사항을 만족하는지 판단합니다.
-
-### Comparability
-
-```text
-Baseline Actual Result + Candidate Actual Result
-→ COMPARABLE / NOT_COMPARABLE
-```
-
-두 결과를 직접 비교할 수 있는지를 판단합니다.
-
-### Change Classification
-
-```text
-Expected Result
-+ Baseline Actual Result
-+ Candidate Actual Result
-→ Change Type
-```
-
-Comparable한 경우에만 다음과 같은 변화의 의미를 분류합니다.
-
-- `NO_CHANGE`
-- `SECURITY_REGRESSION`
-- `USABILITY_REGRESSION`
-- `IMPROVEMENT`
-- `POLICY_BEHAVIOR_CHANGED`
+| 문서 | 내용 |
+| --- | --- |
+| [문서 지도](docs/README.md) | 전체 문서 구조와 source-of-truth |
+| [MVP 범위](docs/product/mvp-scope.md) | 현재 제품 범위와 비범위 |
+| [핵심 도메인 모델](docs/domain/core-model.md) | Aggregate와 주요 invariant |
+| [API 계약](docs/api/README.md) | REST API 공개 계약 |
+| [OpenAPI](docs/api/openapi.yaml) | 기계 판독 가능한 API schema |
+| [TestRun Persistence](docs/architecture/testrun-persistence.md) | 저장 구조와 historical identity |
+| [비동기 신뢰성](docs/architecture/async-reliability-and-testing.md) | SQS/claim/retry/convergence 원칙 |
+| [ADR](docs/decisions/README.md) | 주요 아키텍처 결정 기록 |
+| [AI 개발 워크플로](docs/ai-development/workflow.md) | AI-assisted 개발 규칙 |
+| [Codex 운영 규칙](AGENTS.md) | repository-level agent guardrail |
 
 ---
 
-## 설계 원칙
+## Repository 관계
 
-### Test what you deploy
+- **Portfolio fork:** `haeinChoe/guardbench-backend`
+- **Original team repository:** `GuardBench/guardbench-backend`
 
-Quality Gate를 통과한 Candidate와 실제 배포되는 Guardrail Version이 동일해야 합니다. 따라서 배포 승인용 Test Run에서는 mutable DRAFT를 직접 테스트 Target으로 사용하지 않습니다.
-
-### Reproducible Test Run
-
-하나의 Test Run이 시작되면 다음 요소는 변경되지 않습니다.
-
-- Test Case Snapshot
-- Resolved Baseline Target
-- Resolved Candidate Target
-
-이를 통해 테스트 실행 도중 Test Case나 Working Draft가 수정되더라도 이미 시작된 Test Run의 기준이 바뀌지 않도록 합니다.
-
-### Domain-Agnostic Core
-
-고객센터 챗봇은 GuardBench를 검증하기 위한 Reference Domain일 뿐입니다. 특정 산업의 정책은 Test Case Revision 데이터로 표현하며, Core Domain은 다른 Safety Test Suite에도 동일하게 적용할 수 있도록 유지합니다.
-
-### Execution과 Policy Evaluation의 분리
-
-API 오류나 timeout으로 결과를 얻지 못한 상태와 Candidate가 정책을 위반한 상태는 서로 다르게 취급합니다.
-
-```text
-Execution Error ≠ Assertion Failure ≠ NOT_COMPARABLE
-```
-
-실행 신뢰성이 충분하지 않은 Test Run은 정책 품질 실패로 처리하지 않고 `NOT_EVALUATED` 상태로 관리할 수 있습니다.
-
----
-
-## Project Scope
-
-GuardBench MVP의 핵심 범위는 Amazon Bedrock Guardrails 정책 변경에 대한 회귀 검증입니다.
-
-- 동일 Safety Test Suite의 Baseline / Candidate 실행
-- Candidate Assertion
-- Regression 및 Change Classification
-- Metrics Aggregation
-- Quality Gate
-- Test Run Audit History
-- 비동기 Test Execution
-
-GuardBench는 Guardrail의 출력 자체를 정답으로 간주하지 않습니다. **Expected Result는 테스트 작성자가 정의하고, GuardBench는 이를 기준으로 실행 결과를 평가합니다.**
-
----
-
-## Repository
-
-이 저장소는 GuardBench의 Backend 애플리케이션을 관리합니다.
-
-GuardBench 프로젝트의 테스트 정의, 실행 오케스트레이션, Amazon Bedrock Guardrails 연동, 결과 정규화, Assertion / Regression 분석 및 Quality Gate 계산을 담당합니다.
+이 fork는 팀 프로젝트 결과물을 개인 포트폴리오에서 기술적으로 설명하기 위한 저장소입니다. 원본 프로젝트의 상세 구현 계약은 코드와 `APPROVED` 상태의 GitHub 문서를 기준으로 확인할 수 있습니다.

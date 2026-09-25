@@ -1,0 +1,104 @@
+package com.guardbench.evaluation.application.port.out;
+
+import java.util.List;
+import java.util.Objects;
+
+/**
+ * Evaluation Context가 소유하는 TestRun 실행 사실의 불변 값이다.
+ *
+ * <p>TestRun Domain 타입을 직접 사용하지 않고 스칼라 값 기반으로 표현한다.
+ *
+ * <p>ADR 0005: 최종화는 모든 Snapshot 실행이 terminal일 때만 가능하므로
+ * Snapshot별 terminal 여부와 상태 code 및 Evaluator verdict를 보존한다.
+ */
+public record TestRunExecutionFacts(
+        long testRunId,
+        String testRunStatus,
+        int testCaseCount,
+        String evaluatorReference,
+        double assertionPassRateThreshold,
+        double executionSuccessRateThreshold,
+        List<SnapshotExecutionFact> snapshotFacts
+) {
+
+    public TestRunExecutionFacts {
+        Objects.requireNonNull(testRunStatus, "testRunStatus must not be null");
+        Objects.requireNonNull(evaluatorReference, "evaluatorReference must not be null");
+        Objects.requireNonNull(snapshotFacts, "snapshotFacts must not be null");
+        if (testCaseCount <= 0) {
+            throw new IllegalArgumentException("testCaseCount must be positive");
+        }
+        requireRate(assertionPassRateThreshold, "assertionPassRateThreshold");
+        requireRate(executionSuccessRateThreshold, "executionSuccessRateThreshold");
+    }
+
+    private static void requireRate(double value, String label) {
+        if (!Double.isFinite(value) || value < 0.0 || value > 1.0) {
+            throw new IllegalArgumentException(label + " must be between 0 and 1");
+        }
+    }
+
+    /**
+     * 개별 Snapshot의 단일 실행 사실이다.
+     *
+     * @param snapshotId TestCaseSnapshot scalar ID
+     * @param expectedActionCode expected action code (e.g. "ALLOW", "BLOCK")
+     * @param execution 단일 실행 사실
+     */
+    public record SnapshotExecutionFact(
+            long snapshotId,
+            String expectedActionCode,
+            TargetExecutionFact execution
+    ) {
+        public SnapshotExecutionFact {
+            Objects.requireNonNull(expectedActionCode, "expectedActionCode must not be null");
+            Objects.requireNonNull(execution, "execution must not be null");
+        }
+
+        public boolean terminal() {
+            return execution.terminal();
+        }
+
+        public boolean succeeded() {
+            return execution.succeeded();
+        }
+    }
+
+    /**
+     * 하나의 Snapshot pipeline 실행 사실이다.
+     *
+     * @param terminal 실행 결과가 terminal 상태로 확정되었는지
+     * @param statusCode 실행 상태 code(SUCCEEDED, FAILED, TIMED_OUT, NOT_STARTED), 실행 결과가 아직 없으면 null
+     * @param actionCode 성공 실행에서 Evaluator가 만든 verdict code, 그 외에는 null
+     */
+    public record TargetExecutionFact(
+            boolean terminal,
+            String statusCode,
+            String actionCode
+    ) {
+        private static final String SUCCEEDED = "SUCCEEDED";
+
+        public TargetExecutionFact {
+            if (terminal && statusCode == null) {
+                throw new IllegalArgumentException("terminal execution must have a status code");
+            }
+            if (statusCode == null && actionCode != null) {
+                throw new IllegalArgumentException("action code requires a status code");
+            }
+        }
+
+        /** 실행이 성공으로 확정되었는지 여부다. */
+        public boolean succeeded() {
+            return terminal && SUCCEEDED.equals(statusCode);
+        }
+
+        public String evaluatorVerdictCode() {
+            return actionCode;
+        }
+
+        /** 실행 결과가 아직 저장되지 않은 target이다. */
+        public static TargetExecutionFact notExecuted() {
+            return new TargetExecutionFact(false, null, null);
+        }
+    }
+}

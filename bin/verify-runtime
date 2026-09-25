@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}"
+
+command -v python3.11 >/dev/null
+command -v k6 >/dev/null
+python3.11 --version
+k6 version
+test -x "$root/bin/run-performance"
+test -f "$root/performance/profiles/smoke.yaml"
+test -f "$root/performance/datasets/baseline-v1.yaml"
+test -f "$root/http/testsets/notion-testset-import.http"
+cd "$root"
+python3.11 -c 'import performance.runner'
+PERF_TARGET_URL=https://artifact.verify.invalid/v1/chat/completions \
+PERF_TARGET_MODEL=artifact-verify-model \
+PERF_TARGET_REVISION=artifact-verify \
+  "$root/bin/run-performance" --dry-run --profile "$root/performance/profiles/smoke.yaml" --result-dir "$(mktemp -d)/dry-run" >/dev/null
+echo "GuardBench Performance Runner container verification passed."

@@ -1,0 +1,49 @@
+﻿# Gradle
+.gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# Java
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.war
+*.log
+__pycache__/
+hs_err_pid*
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+application-local.yml
+application-secret.yml
+
+# AWS
+.aws/
+credentials
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.kiro/
+/out/
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+!/bin/
+!/bin/**
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Codex local project configuration
+.codex/

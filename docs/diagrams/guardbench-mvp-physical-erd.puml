@@ -1,0 +1,235 @@
+@startuml
+!pragma layout smetana
+title GuardBench MVP PostgreSQL Physical ERD
+
+hide methods
+hide stereotypes
+skinparam linetype ortho
+skinparam shadowing false
+skinparam entity {
+  BackgroundColor White
+  BorderColor #374151
+  HeaderBackgroundColor #E5E7EB
+}
+
+entity "test_suite" as test_suite {
+  * id : BIGINT <<PK, sequence>>
+  --
+  * name : TEXT
+    description : TEXT
+  * created_at : TIMESTAMPTZ(6)
+  * updated_at : TIMESTAMPTZ(6)
+}
+
+entity "test_case" as test_case {
+  * id : BIGINT <<PK, sequence>>
+  --
+  * test_suite_id : BIGINT <<FK>>
+  * name : TEXT
+  * input : TEXT
+  * expected_action : VARCHAR(16)
+  * severity : VARCHAR(16)
+  * category : TEXT
+  * created_at : TIMESTAMPTZ(6)
+  * updated_at : TIMESTAMPTZ(6)
+}
+
+entity "target_reference" as target_reference {
+  * reference_id : TEXT <<PK>>
+  --
+  * target_type : VARCHAR(32) = HTTP_ENDPOINT
+}
+
+entity "http_endpoint_target" as http_endpoint_target {
+  * reference_id : TEXT <<PK, FK>>
+  --
+  * endpoint_url : TEXT
+  * model : TEXT
+    requested_revision : TEXT
+}
+
+entity "evaluator_reference" as evaluator_reference {
+  * reference_id : TEXT <<PK>>
+  --
+  * provider_code : VARCHAR(32)
+  * model_id : TEXT
+}
+
+entity "test_run" as test_run {
+  * id : BIGINT <<PK, sequence>>
+  --
+  * test_suite_id : BIGINT <<historical identity>>
+  * status : VARCHAR(16)
+  * test_case_count : INTEGER
+  * processed_test_case_count : INTEGER
+  * target_reference_id : TEXT <<UK, FK>>
+  * evaluator_reference_id : TEXT <<FK>>
+  * assertion_pass_rate_threshold : DOUBLE PRECISION
+  * execution_success_rate_threshold : DOUBLE PRECISION
+    execution_outcome : VARCHAR(16)
+  * created_at : TIMESTAMPTZ(6)
+    started_at : TIMESTAMPTZ(6)
+    completed_at : TIMESTAMPTZ(6)
+  * updated_at : TIMESTAMPTZ(6)
+}
+
+entity "test_case_snapshot" as snapshot {
+  * id : BIGINT <<PK, sequence>>
+  --
+  * test_run_id : BIGINT <<FK>>
+  * source_test_case_id : BIGINT <<historical identity>>
+  * name : TEXT
+  * input : TEXT
+  * expected_action : VARCHAR(16)
+  * severity : VARCHAR(16)
+  * category : TEXT
+  * created_at : TIMESTAMPTZ(6)
+  --
+  UK (test_run_id, source_test_case_id)
+}
+
+entity "test_execution" as execution {
+  * snapshot_id : BIGINT <<PK, FK>>
+  --
+  * result_status : VARCHAR(16)
+    application_response : TEXT
+    evaluator_verdict : VARCHAR(16)
+    error_stage : VARCHAR(32)
+    error_code : TEXT
+    error_message : TEXT
+    started_at : TIMESTAMPTZ(6)
+    completed_at : TIMESTAMPTZ(6)
+}
+
+entity "assertion_result" as assertion {
+  * snapshot_id : BIGINT <<PK, FK>>
+  --
+  * assertion_status : VARCHAR(16)
+  * created_at : TIMESTAMPTZ(6)
+}
+
+entity "change_result" as change_result {
+  * snapshot_id : BIGINT <<PK, FK>>
+  --
+  * comparability_status : VARCHAR(32)
+    change_type : VARCHAR(64)
+  * created_at : TIMESTAMPTZ(6)
+}
+
+entity "quality_gate_result" as quality_gate {
+  * test_run_id : BIGINT <<PK, FK>>
+  --
+  * gate_status : VARCHAR(32)
+    assertion_pass_rate : DOUBLE PRECISION
+    assertion_pass_rate_threshold : DOUBLE PRECISION
+    assertion_passed : BOOLEAN
+    execution_success_rate : DOUBLE PRECISION
+    execution_success_rate_threshold : DOUBLE PRECISION
+    execution_passed : BOOLEAN
+  * created_at : TIMESTAMPTZ(6)
+}
+
+entity "test_run_idempotency" as idempotency {
+  * idempotency_key : VARCHAR(100) <<PK>>
+  --
+  * request_fingerprint : CHAR(64)
+  * test_run_id : BIGINT <<UK, FK>>
+  * created_at : TIMESTAMPTZ(6)
+  * expires_at : TIMESTAMPTZ(6)
+}
+
+entity "test_case_bulk_idempotency" as test_case_bulk_idempotency {
+  * idempotency_key : VARCHAR(100) <<PK>>
+  --
+  * request_fingerprint : CHAR(64)
+  * test_suite_id : BIGINT <<FK>>
+    created_test_case_ids : BIGINT[]
+    total_test_case_count : BIGINT
+  * created_at : TIMESTAMPTZ(6)
+  * expires_at : TIMESTAMPTZ(6)
+}
+
+entity "test_run_resolution_claim" as resolution_claim {
+  * test_run_id : BIGINT <<PK, FK>>
+  --
+  * claim_token : UUID
+  * lease_until : TIMESTAMPTZ(6)
+  * attempt_count : INTEGER
+  * claimed_at : TIMESTAMPTZ(6)
+  * updated_at : TIMESTAMPTZ(6)
+}
+
+entity "test_execution_claim" as execution_claim {
+  * snapshot_id : BIGINT <<PK, FK>>
+  --
+  * claim_token : UUID
+  * lease_until : TIMESTAMPTZ(6)
+  * attempt_count : INTEGER
+  * claimed_at : TIMESTAMPTZ(6)
+  * updated_at : TIMESTAMPTZ(6)
+}
+
+entity "outbox_event" as outbox {
+  * event_id : UUID <<PK>>
+  --
+  * event_type : VARCHAR(32)
+  * schema_version : SMALLINT
+  * payload : JSONB
+  * deduplication_key : TEXT <<UK>>
+  * status : VARCHAR(16)
+  * created_at : TIMESTAMPTZ(6)
+    published_at : TIMESTAMPTZ(6)
+}
+
+test_suite ||--o{ test_case : contains
+test_suite ||--o{ test_case_bulk_idempotency : bulk request replay
+test_suite ||..o{ test_run : historical identity
+target_reference ||--o| test_run : referenced by
+target_reference ||--|| http_endpoint_target : HTTP target detail
+evaluator_reference ||--o{ test_run : classifier reference
+test_run ||--|{ snapshot : fixes
+test_case ||..o{ snapshot : historical identity
+snapshot ||--o| execution : single target
+snapshot ||--o| execution_claim : technical lease
+test_run ||--o| idempotency : request replay
+test_run ||--o| resolution_claim : technical lease
+snapshot ||--o| assertion : expected vs evaluated behavior
+snapshot ||--o| change_result : persisted evaluation shape
+test_run ||--o| quality_gate : final evaluation
+outbox ..> test_run : payload reference only
+
+note right of target_reference
+  Current target contract is HTTP_ENDPOINT only.
+  test_run.target_reference_id is NOT NULL and UNIQUE.
+end note
+
+note right of evaluator_reference
+  Stores the provider/model identity of the global
+  Response Behavior Classifier used by a TestRun.
+  test_run.evaluator_reference_id is required.
+end note
+
+note right of http_endpoint_target
+  endpoint_url and OpenAI-compatible model are required.
+  requested_revision is optional metadata.
+end note
+
+note bottom of execution
+  A successful execution stores both the AI Application response
+  and the normalized classifier verdict ALLOW/BLOCK.
+end note
+
+note bottom of quality_gate
+  No row = not evaluated yet.
+  NOT_EVALUATED = every metric evidence field is NULL.
+  Evaluated rows preserve value, threshold, and passed.
+end note
+
+legend left
+  This diagram is the current physical schema created by the Flyway migration chain.
+  TestCase → TestSuite uses ON DELETE RESTRICT.
+  Snapshot source and TestRun suite IDs are historical scalars without FKs.
+  Claim relations are technical leases, not Domain IDs or Aggregate Repositories.
+endlegend
+
+@enduml
