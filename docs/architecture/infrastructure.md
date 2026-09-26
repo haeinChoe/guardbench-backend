@@ -188,6 +188,18 @@ service task definition과 primary rollout state가 요청한 값인지 검증�
 configuration 변경은 Terraform apply로 최신 bootstrap revision을 만든 뒤, Backend CI가 그
 revision을 다음 application revision의 base로 사용한다.
 
+### Backend branch와 자동 staging 배포
+
+Backend Git branch와 runtime environment는 구분한다. `dev`는 통합 branch이고 `main`은 안정화 및 배포
+기준 branch다. Backend CI는 두 branch 대상 PR과 push에서 검증하며, `dev` push는 runtime 배포를
+시작하지 않는다. application source 변경이 포함된 `main` push만 `staging` GitHub Environment를 통해
+자동 배포한다. PR과 source 변경이 없는 main push는 staging runtime을 변경하지 않는다.
+
+배포 성공 뒤 staging worker image sync workflow가 같은 immutable commit SHA image를 Worker Service에
+반영한다. 이 workflow 변경은 ECS, ECR, GitHub Environment 또는 Terraform resource를 rename하거나
+provision하지 않는다. `guardbench-dev-*` 같은 기존 AWS resource 식별자는 별도 인프라 변경이 승인될
+때까지 유지한다. 수동 `workflow_dispatch`의 `dev` 및 `performance` target은 기존 운영 경로로 남는다.
+
 ### Task 환경변수
 
 | 이름 | 값 또는 주입원 | 이유 |

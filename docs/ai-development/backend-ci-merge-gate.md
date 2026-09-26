@@ -1,10 +1,10 @@
-# Backend CI와 dev Merge Gate
+# Backend CI와 Branch Merge Gate
 
 > Status: DRAFT
 > Owner: Backend
 > Scope: GitHub Issue #82
 
-이 문서는 Backend CI workflow의 실행 범위와 `dev` 병합 차단을 위한 GitHub 관리자 설정 절차를 기록한다. 새 공개 API, DB 계약 또는 도메인 동작을 결정하지 않는다.
+이 문서는 Backend CI workflow의 실행 범위와 `dev`·`main` 병합 차단을 위한 GitHub 관리자 설정 절차를 기록한다. 새 공개 API, DB 계약 또는 도메인 동작을 결정하지 않는다.
 
 ## Backend CI workflow
 
@@ -12,14 +12,19 @@
 
 | Event | 대상 | 실행 명령 |
 | --- | --- | --- |
-| `pull_request` | base branch가 `dev`인 PR | Java source/build 입력 변경 시 `testFast`, `integrationTest`, `bootJar`를 독립 job으로 병렬 실행하고 `verify` aggregate가 모두 요구; 그 외에는 `verify` skip |
-| `push` | `dev` | Java source/build 입력 변경 시 `testFast`, `integrationTest`, `bootJar`를 독립 job으로 병렬 실행하고 `verify` aggregate가 모두 요구; 그 외에는 `verify` skip |
+| `pull_request` | base branch가 `dev` 또는 `main`인 PR | Java source/build 입력 변경 시 `testFast`, `integrationTest`, `bootJar`를 독립 job으로 병렬 실행하고 `verify` aggregate가 모두 요구; 그 외에는 `verify` skip |
+| `push` | `dev` 또는 `main` | Java source/build 입력 변경 시 `testFast`, `integrationTest`, `bootJar`를 독립 job으로 병렬 실행하고 `verify` aggregate가 모두 요구; 그 외에는 `verify` skip |
 | `workflow_dispatch` | `source` | `testFast`, `integrationTest`, `bootJar`를 독립 job으로 실행하고 `verify` aggregate가 모두 요구 |
 | `workflow_dispatch` | `infrastructure` | source 검증 없이 infrastructure deploy만 수행 |
 
-`workflow_dispatch`의 `deployment_target`은 `dev` 또는 `performance`다. `push`는 항상 `dev`
-환경에만 자동 배포하고, Performance Backend는 수동 실행에서 `deployment_target: performance`를
-선택한다. deploy job은 선택된 GitHub Environment의 다음 변수를 사용한다. 값은 repository/org
+`dev`는 통합 Git branch이며 `main`은 안정화·배포 기준 branch다. `dev` push는 검증만 수행하고,
+자동 source 배포는 application source 변경이 있는 `main` push에서만 `staging` GitHub Environment로
+실행한다. 배포 완료 후 `Staging Worker Image Sync`가 같은 commit SHA image로 Worker revision을
+갱신한다. PR event에서는 배포하거나 Worker를 동기화하지 않는다.
+
+`workflow_dispatch`의 `deployment_target`은 기존 `dev` 또는 `performance`를 유지한다. 수동 source 및
+infrastructure 배포는 `dev` branch에서만 실행할 수 있다. Performance Backend는 수동 실행에서
+`deployment_target: performance`를 선택한다. deploy job은 선택된 GitHub Environment의 다음 변수를 사용한다. 값은 repository/org
 공통 변수가 아니라 각 Environment에 설정한다.
 
 Performance application revision을 배포할 때는 Actions에서 `Backend CI`를 `dev` branch로
@@ -75,31 +80,37 @@ Gradle의 기존 `test`와 `check` task는 전체 테스트 suite를 실행하�
 이 workflow가 PR에 표시하는 required check 후보는 다음이다.
 
 ```text
-Backend CI / verify
+verify
 ```
 
-GitHub UI에 표시되는 이름은 workflow를 처음 실행한 뒤 확인한다. Ruleset에는 UI에 실제로 표시된 이름을 선택한다.
+GitHub Actions UI에서는 `Backend CI / verify`로 표시된다. Ruleset API가 요구하는 status check context는
+`verify`다. 각 base branch에서 workflow 실행 후 실제 표시 이름과 context를 확인해 required status
+check로 선택한다.
 
-## dev ruleset 관리자 적용
+## dev·main ruleset 관리자 적용
 
 repository administrator는 GitHub repository에서 다음을 적용한다.
 
 1. **Settings → Rules → Rulesets → New branch ruleset**을 연다.
-2. target branch pattern을 `dev`로 설정한다.
+2. target branch pattern을 `dev` 또는 `main`으로 설정한다. 두 branch 모두 같은 required check를 적용한다.
 3. **Require status checks to pass**를 활성화한다.
-4. 첫 Backend CI 실행 후 표시된 `Backend CI / verify` check를 required status check로 선택한다.
+4. 각 base branch 대상 Backend CI 실행 후 표시된 `Backend CI / verify` check를 required status check로 선택한다.
 5. 팀 정책에 따라 pull request 요구, bypass actor, 최신 base branch 요구 여부를 별도로 설정한다. 이 문서는 해당 정책을 결정하지 않는다.
 6. ruleset을 저장한 뒤 새 PR에서 Backend CI가 성공하지 않으면 merge control이 차단되는지 확인한다.
 
-기존 branch protection을 사용하는 repository는 동등하게 **Settings → Branches → Branch protection rules**에서 `dev` rule에 같은 required status check를 추가할 수 있다. Ruleset과 legacy branch protection을 중복 적용할 때의 우선순위·bypass 정책은 repository administrator가 확인한다.
+기존 branch protection을 사용하는 repository는 동등하게 **Settings → Branches → Branch protection rules**에서 `dev`와 `main` rule에 같은 required status check를 추가할 수 있다. Ruleset과 legacy branch protection을 중복 적용할 때의 우선순위·bypass 정책은 repository administrator가 확인한다.
 
 ## 검증 절차
 
-1. Backend Java 변경이 있는 disposable PR을 열어 `Backend CI / verify`가 자동 실행되고 성공하는지 확인한다.
+1. `dev`와 `main` 각각에 Backend Java 변경이 있는 disposable PR을 열어 `Backend CI / verify`가 자동 실행되고 성공하는지 확인한다.
 2. 별도 disposable branch에서 컴파일 오류 또는 고의 실패 테스트를 추가한 PR을 열어 check가 실패하고 merge가 차단되는지 확인한다.
 3. 실패 검증 PR은 merge하지 않고 닫은 뒤 disposable branch를 삭제한다.
-4. `dev` push에서도 같은 workflow가 실행되는지 Actions history에서 확인한다.
+4. `dev` push와 `main` push에서 workflow가 실행되며, `dev` push에서는 배포 job이 실행되지 않는지 Actions history에서 확인한다.
 
-## 권한 제한
+## 현재 ruleset 상태
 
-현재 `gh-agent` 인증 토큰은 branch protection/ruleset 조회 API에 `403 Resource not accessible by personal access token`을 반환한다. 따라서 workflow 파일의 구현·PR check 관찰은 에이전트가 할 수 있지만, required status check를 실제 `dev` merge gate로 적용하는 관리자 설정은 repository admin 권한이 있는 담당자가 수행해야 한다.
+Issue #8 작업 시점에 repository ruleset을 읽기 전용으로 조회했다. `dev` ruleset은 PR과 `verify`
+required status check를 적용하고 있다. `main-pr-protection` ruleset은 PR을 요구하지만 required status
+check는 아직 설정하지 않았다. 따라서 `main` 대상 PR에서도 `verify`가 생성되는지 확인한 뒤, repository
+관리자가 main ruleset에 해당 check를 required로 추가해야 merge gate가 된다. 이번 Issue에서는 ruleset을
+변경하지 않는다.
