@@ -1,0 +1,63 @@
+name: Close issues from dev pull requests
+
+on:
+  push:
+    branches: [dev]
+
+permissions: {}
+
+jobs:
+  close_issues:
+    name: Close issues referenced by merged PRs
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Close issues referenced by merged pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pr_numbers="$(gh api "repos/${GH_REPO}/commits/${COMMIT_SHA}/pulls" \
+            --jq '.[] | select(.base.ref == "dev" and .merged_at != null) | .number')"
+          if [[ -z "$pr_numbers" ]]; then
+            echo "No merged dev pull request is associated with ${COMMIT_SHA}."
+            exit 0
+          fi
+
+          while IFS= read -r pr_number; do
+            [[ -z "$pr_number" ]] && continue
+            pr_body="$(gh api "repos/${GH_REPO}/pulls/${pr_number}" --jq '.body // ""')"
+            issue_numbers="$(PR_BODY="$pr_body" python3 - <<'PY'
+          import os
+          import re
+
+          pattern = re.compile(
+              r"(?<![\w/.-])(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s*:?\s*#(\d+)\b",
+              re.IGNORECASE,
+          )
+          numbers = dict.fromkeys(pattern.findall(os.environ.get("PR_BODY", "")))
+          print("\n".join(numbers))
+          PY
+          )"
+
+            while IFS= read -r issue_number; do
+              [[ -z "$issue_number" ]] && continue
+              issue="$(gh api "repos/${GH_REPO}/issues/${issue_number}")"
+              if jq -e 'has("pull_request")' <<< "$issue" >/dev/null; then
+                echo "Skipping #${issue_number}: reference points to a pull request."
+                continue
+              fi
+              state="$(jq -r '.state' <<< "$issue")"
+              if [[ "$state" == "open" ]]; then
+                gh issue close "$issue_number" --reason completed --repo "$GH_REPO"
+              else
+                echo "Skipping #${issue_number}: issue is already ${state}."
+              fi
+            done <<< "$issue_numbers"
+          done <<< "$pr_numbers"

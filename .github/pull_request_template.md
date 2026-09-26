@@ -1,12 +1,12 @@
 <!--
 리뷰 준비 전 초안이라면 Draft PR을 사용해 주세요.
-`Closes #N`은 PR 대상이 저장소 기본 branch일 때 병합 후 Issue를 자동 종료합니다. 다른 branch 대상 PR은 Issue를 별도로 연결·종료해 주세요.
+`Closes #N`은 기본 branch PR 병합 시 GitHub가 처리하고, `dev` 대상 PR은 병합 push 후 저장소 workflow가 같은 저장소의 열린 Issue를 종료합니다. 다른 대상 branch에서는 자동 종료되지 않습니다.
 해당하지 않는 안내 문구와 빈 항목은 정리해도 됩니다.
 -->
 
 ## 관련 Issue
 
-관련 Issue: #
+Closes #
 
 ## 결과
 

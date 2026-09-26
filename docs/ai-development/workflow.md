@@ -123,7 +123,7 @@ git commit -m "feat(evaluation): SnapshotEvaluation Persistence Adapter 구현"
 2. **PR 템플릿 확인 및 작성**:
    - PR을 만들기 직전에 대상 저장소의 기본 branch에 있는 `.github/pull_request_template.md`를 확인한다. 템플릿이 여러 개면 현재 변경에 맞는 템플릿을 선택한다.
    - 템플릿의 섹션을 유지하고 결과, 범위와 Non-Goals, 계약 영향, 검증 결과, 미검증 사유, 리뷰 포인트를 실제 작업 내용으로 채운다. 해당 없는 항목은 `없음`으로 표시하고 기본 placeholder와 빈 체크 항목을 남기지 않는다.
-   - 관련 Issue를 연결할 때 저장소의 기본 branch와 PR base를 확인한다. GitHub의 `Closes #N` 자동 종료는 PR이 기본 branch를 대상으로 할 때만 적용된다. 다른 branch 대상 PR은 해당 키워드에 의존하지 말고, 완료 후 Issue를 별도로 닫거나 필요한 연결을 수동으로 확인한다.
+   - 관련 Issue를 연결할 때 PR 본문에 `Closes #N`을 사용한다. GitHub는 기본 branch 대상 PR에서 이를 자동 처리하고, `dev` 대상 PR은 `.github/workflows/close-issues-on-dev-merge.yml`이 병합 push 후 같은 저장소의 열린 Issue를 닫는다. 그 외 branch 대상 PR은 자동 종료되지 않는다.
    - 생성 후 본문이 템플릿 구조와 실제 검증 결과를 반영하는지 다시 확인한다.
 3. **이미 push된 커밋 재구성 가이드**:
    - 원격에 이미 push된 커밋을 재구성/분리해야 할 경우:
