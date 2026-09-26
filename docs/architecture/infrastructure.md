@@ -199,6 +199,8 @@ Backend Git branch와 runtime environment는 구분한다. `dev`는 통합 branc
 반영한다. 이 workflow 변경은 ECS, ECR, GitHub Environment 또는 Terraform resource를 rename하거나
 provision하지 않는다. `guardbench-dev-*` 같은 기존 AWS resource 식별자는 별도 인프라 변경이 승인될
 때까지 유지한다. 수동 `workflow_dispatch`의 `dev` 및 `performance` target은 기존 운영 경로로 남는다.
+GitHub `dev` 및 `main` ruleset은 모두 PR과 `verify` required status check를 적용한다. main ruleset의
+기존 PR 보호, branch deletion 방지와 non-fast-forward 방지 규칙도 유지한다.
 
 ### Task 환경변수
 

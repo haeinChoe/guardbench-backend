@@ -109,8 +109,7 @@ repository administrator는 GitHub repository에서 다음을 적용한다.
 
 ## 현재 ruleset 상태
 
-Issue #8 작업 시점에 repository ruleset을 읽기 전용으로 조회했다. `dev` ruleset은 PR과 `verify`
-required status check를 적용하고 있다. `main-pr-protection` ruleset은 PR을 요구하지만 required status
-check는 아직 설정하지 않았다. 따라서 `main` 대상 PR에서도 `verify`가 생성되는지 확인한 뒤, repository
-관리자가 main ruleset에 해당 check를 required로 추가해야 merge gate가 된다. 이번 Issue에서는 ruleset을
-변경하지 않는다.
+Issue #8 작업 시점에 repository ruleset을 확인하고 `main-pr-protection`을 갱신했다. `dev`와 `main`은
+모두 PR 및 `verify` required status check를 적용한다. main의 기존 PR, deletion, non-fast-forward 규칙은
+유지했다. PR #9의 `dev` 대상 CI에서 `verify`가 성공하는 것을 확인했다. 실패한 main PR을 별도로 열어
+merge 차단을 재현하지는 않았다.
