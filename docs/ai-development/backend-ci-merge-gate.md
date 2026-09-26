@@ -1,115 +1,37 @@
-# Backend CI와 Branch Merge Gate
+# Backend CI Branch 검증과 Merge Gate
 
 > Status: DRAFT
 > Owner: Backend
-> Scope: GitHub Issue #82
+> Scope: GitHub Issue #8
 
-이 문서는 Backend CI workflow의 실행 범위와 `dev`·`main` 병합 차단을 위한 GitHub 관리자 설정 절차를 기록한다. 새 공개 API, DB 계약 또는 도메인 동작을 결정하지 않는다.
+이 문서는 현재 Backend CI workflow와 dev/main ruleset 구성을 기록한다. 구현 판단은 Issue와 APPROVED 계약을 우선한다.
 
 ## Backend CI workflow
 
-[Backend CI workflow](../../.github/workflows/backend-ci.yml)는 다음 event에서 실행된다.
+[Backend CI workflow](../../.github/workflows/backend-ci.yml)는 다음 event에서 검증한다.
 
-| Event | 대상 | 실행 명령 |
+| Event | 대상 | 동작 |
 | --- | --- | --- |
-| `pull_request` | base branch가 `dev` 또는 `main`인 PR | Java source/build 입력 변경 시 `testFast`, `integrationTest`, `bootJar`를 독립 job으로 병렬 실행하고 `verify` aggregate가 모두 요구; 그 외에는 `verify` skip |
-| `push` | `dev` 또는 `main` | Java source/build 입력 변경 시 `testFast`, `integrationTest`, `bootJar`를 독립 job으로 병렬 실행하고 `verify` aggregate가 모두 요구; 그 외에는 `verify` skip |
-| `workflow_dispatch` | `source` | `testFast`, `integrationTest`, `bootJar`를 독립 job으로 실행하고 `verify` aggregate가 모두 요구 |
-| `workflow_dispatch` | `infrastructure` | source 검증 없이 infrastructure deploy만 수행 |
+| `pull_request` | base branch `dev`, `main` | workflow policy test를 실행하고, 관련 source/build/workflow 변경이면 `testFast`, `integrationTest`, `bootJar`, `verify` 실행 |
+| `push` | `dev`, `main` | workflow policy test를 실행하고, 관련 source/build/workflow 변경이면 `testFast`, `integrationTest`, `bootJar`, `verify` 실행 |
+| `workflow_dispatch` | 실행자가 선택한 branch | 입력 없이 수동 verification 실행. 전체 `testFast`, `integrationTest`, `bootJar`, `verify` 실행 |
 
-`dev`는 통합 Git branch이며 `main`은 안정화·배포 기준 branch다. `dev` push는 검증만 수행하고,
-자동 source 배포는 application source 변경이 있는 `main` push에서만 `staging` GitHub Environment로
-실행한다. 배포 완료 후 `Staging Worker Image Sync`가 같은 commit SHA image로 Worker revision을
-갱신한다. PR event에서는 배포하거나 Worker를 동기화하지 않는다.
+`dev`는 개발 통합·안정화 branch이며 `main`은 안정된 기준선이다. 어느 branch의 push도 배포하지 않는다. `workflow_dispatch`도 수동 CI 검증 전용이다.
 
-`workflow_dispatch`의 `deployment_target`은 기존 `dev` 또는 `performance`를 유지한다. 수동 source 및
-infrastructure 배포는 `dev` branch에서만 실행할 수 있다. Performance Backend는 수동 실행에서
-`deployment_target: performance`를 선택한다. deploy job은 선택된 GitHub Environment의 다음 변수를 사용한다. 값은 repository/org
-공통 변수가 아니라 각 Environment에 설정한다.
+현재 workflow에는 deployment job, AWS credentials/OIDC 권한, ECS/ECR 호출, worker image sync 경로가 없다. 클라우드 리소스가 없으므로 staging은 향후 배포 환경을 가리키는 문서 개념이다. `main → staging runtime` 배포와 worker 동기화는 별도 Issue 범위다.
 
-Performance application revision을 배포할 때는 Actions에서 `Backend CI`를 `dev` branch로
-실행하고 `deployment_target: performance`, `deployment_mode: source`를 선택한다. Terraform
-인프라 변경을 반영할 때는 같은 target에 `deployment_mode: infrastructure`를 선택한다.
+변경 감지는 `src/`, Gradle build 설정, `qodana.yaml`, Backend CI workflow를 대상으로 한다. 관련 변경이 없으면 Gradle 검증은 생략하지만 `workflow_tests`는 실행된다. 수동 실행은 전체 검증을 수행한다. CI의 `verify`는 `testFast`, `integrationTest`, `bootJar`가 모두 성공해야 통과한다. OpenAPI 명세는 별도 `OpenAPI contract` workflow가 검증한다.
 
-```text
-AWS_DEPLOY_ROLE_ARN
-AWS_REGION
-ECR_REPOSITORY
-ECS_CLUSTER
-ECS_SERVICE
-ECS_CONTAINER_NAME
-ECS_TASK_DEFINITION_FAMILY
-```
+## Required check와 현재 ruleset
 
-GitHub Environment와 IaC가 맞춰야 하는 Performance 배포 계약은 다음과 같다.
+Actions UI의 check 이름은 `Backend CI / verify`이고 ruleset status context는 `verify`다. Repository의 `dev`와 `main` ruleset은 모두 PR과 `verify` required check를 적용한다. main ruleset을 갱신할 때 기존 PR 보호, 삭제 방지, non-fast-forward 방지 규칙을 유지했다.
 
-| 항목 | 값 또는 규칙 |
-| --- | --- |
-| Environment name | `performance` |
-| Allowed deployment branch | `dev` |
-| `AWS_DEPLOY_ROLE_ARN` | Performance ECS 배포 role ARN |
-| `AWS_REGION` | `ap-northeast-2` |
-| `ECR_REPOSITORY` | Performance Backend image repository name |
-| `ECS_CLUSTER` | Performance ECS cluster name |
-| `ECS_SERVICE` | Performance Backend ECS service name |
-| `ECS_CONTAINER_NAME` | Performance app container name |
-| `ECS_TASK_DEFINITION_FAMILY` | Performance app task-definition family name; ARN이나 revision을 사용하지 않음 |
+## 검증 범위
 
-Performance role의 web identity trust policy는 다음 조건을 모두 허용한다.
+- `scripts/test-backend-ci-branch-policy.sh`는 dev/main PR·push, 수동 검증 경로, 배포 job 및 AWS 접근 부재, worker sync 비활성 상태를 검사한다.
+- ECS 배포 전용 검증 스크립트는 현재 workflow에서 호출되지 않아 제거했다.
+- PR check 실행에서 workflow policy test, `testFast`, `integrationTest`, `bootJar`, `verify`를 확인한다.
 
-```json
-{
-  "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-  "token.actions.githubusercontent.com:sub": "repo:GuardBench/guardbench-backend:environment:performance"
-}
-```
+## 향후 배포
 
-위 조건은 `sts:AssumeRoleWithWebIdentity` 허용 statement에 `StringEquals`로 설정한다. `dev`는
-별도 Environment와 별도 role을 사용하고 subject는
-`repo:GuardBench/guardbench-backend:environment:dev`다. role ARN만 추가하고 trust subject를
-갱신하지 않으면 OIDC AssumeRole 단계에서 배포가 실패한다.
-
-Performance 배포는 최신 ACTIVE infrastructure task definition을 base로 사용하며, configured
-service가 같은 task-definition family를 사용하지 않으면 등록 전에 실패한다. source 배포에서는
-ECR repository가 `IMMUTABLE`인지와 image tag가 전체 Git SHA인지 확인한다.
-
-workflow는 `ubuntu-latest`, Temurin JDK 21, Gradle dependency cache를 사용한다. 변경 범위 감지 대상은 `src/`와 Gradle build/configuration 입력이다. `testFast`는 외부 컨테이너 없는 단위·컨트롤러·계약 테스트를, `integrationTest`는 PostgreSQL·SQS·E2E 테스트를 실행한다. `bootJar`는 실행 가능한 Spring Boot JAR 패키징을 검증한다. Testcontainers 테스트는 GitHub-hosted Ubuntu runner의 Docker 환경을 사용한다. 각 job은 Gradle cache hit와 실행 시간을 Summary에 기록하고, integration job은 Testcontainers image 준비를 포함한 실행 시간을 기록한다. Java source/build 입력이 없는 변경에서는 Gradle 검증 job을 실행하지 않는다.
-
-Gradle의 기존 `test`와 `check` task는 전체 테스트 suite를 실행하는 로컬·호환 경로로 유지한다. CI의 `verify`는 `testFast`, `integrationTest`, `bootJar` 결과를 aggregate하며 세 결과가 모두 성공해야 통과한다. OpenAPI 명세 변경은 별도 `OpenAPI contract` workflow에서 독립적으로 검증된다.
-
-이 workflow가 PR에 표시하는 required check 후보는 다음이다.
-
-```text
-verify
-```
-
-GitHub Actions UI에서는 `Backend CI / verify`로 표시된다. Ruleset API가 요구하는 status check context는
-`verify`다. 각 base branch에서 workflow 실행 후 실제 표시 이름과 context를 확인해 required status
-check로 선택한다.
-
-## dev·main ruleset 관리자 적용
-
-repository administrator는 GitHub repository에서 다음을 적용한다.
-
-1. **Settings → Rules → Rulesets → New branch ruleset**을 연다.
-2. target branch pattern을 `dev` 또는 `main`으로 설정한다. 두 branch 모두 같은 required check를 적용한다.
-3. **Require status checks to pass**를 활성화한다.
-4. 각 base branch 대상 Backend CI 실행 후 표시된 `Backend CI / verify` check를 required status check로 선택한다.
-5. 팀 정책에 따라 pull request 요구, bypass actor, 최신 base branch 요구 여부를 별도로 설정한다. 이 문서는 해당 정책을 결정하지 않는다.
-6. ruleset을 저장한 뒤 새 PR에서 Backend CI가 성공하지 않으면 merge control이 차단되는지 확인한다.
-
-기존 branch protection을 사용하는 repository는 동등하게 **Settings → Branches → Branch protection rules**에서 `dev`와 `main` rule에 같은 required status check를 추가할 수 있다. Ruleset과 legacy branch protection을 중복 적용할 때의 우선순위·bypass 정책은 repository administrator가 확인한다.
-
-## 검증 절차
-
-1. `dev`와 `main` 각각에 Backend Java 변경이 있는 disposable PR을 열어 `Backend CI / verify`가 자동 실행되고 성공하는지 확인한다.
-2. 별도 disposable branch에서 컴파일 오류 또는 고의 실패 테스트를 추가한 PR을 열어 check가 실패하고 merge가 차단되는지 확인한다.
-3. 실패 검증 PR은 merge하지 않고 닫은 뒤 disposable branch를 삭제한다.
-4. `dev` push와 `main` push에서 workflow가 실행되며, `dev` push에서는 배포 job이 실행되지 않는지 Actions history에서 확인한다.
-
-## 현재 ruleset 상태
-
-Issue #8 작업 시점에 repository ruleset을 확인하고 `main-pr-protection`을 갱신했다. `dev`와 `main`은
-모두 PR 및 `verify` required status check를 적용한다. main의 기존 PR, deletion, non-fast-forward 규칙은
-유지했다. PR #9의 `dev` 대상 CI에서 `verify`가 성공하는 것을 확인했다. 실패한 main PR을 별도로 열어
-merge 차단을 재현하지는 않았다.
+실제 클라우드 리소스가 다시 준비되면 `main → staging` runtime 배포 정책을 별도 Issue로 정의하고 구현한다. 해당 작업 전에는 GitHub Environment, OIDC, ECS/ECR 또는 worker sync 연결을 가정하지 않는다.

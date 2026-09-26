@@ -161,46 +161,19 @@ docker push {account}.dkr.ecr.ap-northeast-2.amazonaws.com/guardbench-dev:{git-s
 - rolling deployment는 `minimumHealthyPercent=100`, `maximumPercent=200`, deployment circuit breaker rollback을 사용한다.
 - Log Group `/ecs/guardbench-dev/app`을 Task 전에 만들고 14일 보존한다.
 
-### Performance Backend application revision ownership
+### Backend CI 검증과 배포 경계
 
-Performance Backend도 dev Backend와 같은 application revision 배포 경계를 사용한다. Terraform은
-Performance ECS Service의 shape, capacity, environment/secrets, IAM, networking/logging과
-bootstrap Task Definition을 소유한다. Backend CI는 `workflow_dispatch`에서 `performance`
-Environment를 선택했을 때 immutable Git SHA image를 사용해 최신 ACTIVE infrastructure Task
-Definition을 base로 새 application revision을 등록하고 Performance ECS Service만 갱신한다.
+Backend CI는 `dev`와 `main` 대상 PR·push에서 필요한 검증을 수행한다. `workflow_dispatch`는 수동 CI
+검증 전용이며, deployment input이나 AWS/OIDC 접근 권한을 제공하지 않는다. 현재 workflow에는 ECS/ECR
+배포 job과 worker image sync 경로가 없다. 사용할 수 있는 cloud runtime이 없으므로 실제 배포는 하지
+않으며, `staging`은 향후 main 기준 코드가 배포될 환경을 가리키는 문서 개념이다.
 
-`dev`와 `performance` GitHub Environment는 각각 별도의 OIDC role과 해당 Environment subject를
-허용하는 trust policy를 제공해야 한다. Performance Environment의 허용 branch는 `dev`이며,
-Performance role trust policy는 `sts:AssumeRoleWithWebIdentity`에 다음 두 조건을 `StringEquals`로
-설정한다.
+`dev`와 `main`은 integration/stable Git branch다. 두 branch ruleset 모두 PR과 status context `verify`를
+요구한다. main ruleset은 기존 PR 보호, branch deletion 및 non-fast-forward 방지 규칙을 유지한다.
 
-```text
-token.actions.githubusercontent.com:aud = sts.amazonaws.com
-token.actions.githubusercontent.com:sub = repo:GuardBench/guardbench-backend:environment:performance
-```
-
-role ARN만 설정하고 trust policy를 갱신하지 않으면 OIDC AssumeRole 단계에서 실패한다. 각
-Environment는 다음 ECS/ECR 식별자를 제공해야 한다:
-`AWS_REGION`, `ECR_REPOSITORY`, `ECS_CLUSTER`, `ECS_SERVICE`,
-`ECS_CONTAINER_NAME`, `ECS_TASK_DEFINITION_FAMILY`. CI는 service가 configured task-definition
-family와 일치하는지, source image repository가 immutable tag 정책인지, rollout 후 실제
-service task definition과 primary rollout state가 요청한 값인지 검증한다. Infrastructure
-configuration 변경은 Terraform apply로 최신 bootstrap revision을 만든 뒤, Backend CI가 그
-revision을 다음 application revision의 base로 사용한다.
-
-### Backend branch와 자동 staging 배포
-
-Backend Git branch와 runtime environment는 구분한다. `dev`는 통합 branch이고 `main`은 안정화 및 배포
-기준 branch다. Backend CI는 두 branch 대상 PR과 push에서 검증하며, `dev` push는 runtime 배포를
-시작하지 않는다. application source 변경이 포함된 `main` push만 `staging` GitHub Environment를 통해
-자동 배포한다. PR과 source 변경이 없는 main push는 staging runtime을 변경하지 않는다.
-
-배포 성공 뒤 staging worker image sync workflow가 같은 immutable commit SHA image를 Worker Service에
-반영한다. 이 workflow 변경은 ECS, ECR, GitHub Environment 또는 Terraform resource를 rename하거나
-provision하지 않는다. `guardbench-dev-*` 같은 기존 AWS resource 식별자는 별도 인프라 변경이 승인될
-때까지 유지한다. 수동 `workflow_dispatch`의 `dev` 및 `performance` target은 기존 운영 경로로 남는다.
-GitHub `dev` 및 `main` ruleset은 모두 PR과 `verify` required status check를 적용한다. main ruleset의
-기존 PR 보호, branch deletion 방지와 non-fast-forward 방지 규칙도 유지한다.
+이 문서의 AWS topology, resource, OIDC 및 Task Definition 값은 인프라 아키텍처 계약과 향후 배포 설계를
+기록한다. 이 정보는 현재 Backend CI가 배포를 실행하거나 cloud resource를 사용할 수 있음을 의미하지
+않는다. 향후 `main → staging` runtime 배포와 worker 동기화는 별도 Issue에서 정의한다.
 
 ### Task 환경변수
 
