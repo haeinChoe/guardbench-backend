@@ -2,7 +2,7 @@
 
 > Status: APPROVED
 > Owner: Team
-> Last reviewed: 2026-09-01
+> Last reviewed: 2026-09-26
 > Canonical source: GitHub
 > Origin: 현재 팀의 에이전트 운영 논의 및 PR #77 회귀 개선 사례
 
@@ -11,13 +11,13 @@
 ## 전체 흐름
 
 ```text
-Issue 작성 → 계약 상태 확인 → 전용 worktree와 branch 생성 → 시작 보고
-→ 최소 변경과 검증 → 커밋 전 점검 & 로컬 commit 분리 → 사람 검토 → push 전 검증 보고 → 별도 승인 후 push·PR
+Issue 템플릿 확인·작성 → 계약 상태 확인 → 전용 worktree와 branch 생성 → 시작 보고
+→ 최소 변경과 검증 → 커밋 전 점검 & 로컬 commit 분리 → push 권한 확인·사전 보고 → PR 템플릿 확인·작성
 ```
 
 ## 1. Issue 작성
 
-Feature, Bug 또는 Engineering Task 템플릿을 사용한다. 목적, 관련 계약과 상태, 범위, Non-Goals, 검증 가능한 완료 조건, 계약 영향, 예상 검증, 미결정, branch slug와 에이전트 권한을 적는다. 개별 요구사항을 `AGENTS.md`에 복제하지 않는다.
+새 Issue를 작성하거나 요청을 Issue로 구체화할 때 `.github/ISSUE_TEMPLATE/`에서 Feature, Bug, Engineering Task, Decision 중 맞는 템플릿을 확인하고 그 구조를 사용한다. 템플릿의 필수 항목과 완료 조건을 채우고, 에이전트 권한은 제공된 선택값 중 하나로 명시한다. 기존 Issue를 전달받은 경우에도 본문과 권한 선택값을 직접 확인하며, 권한 필드가 없거나 범위가 모호하면 원격 작업을 포함해 추정하지 않는다. 개별 요구사항을 `AGENTS.md`에 복제하지 않는다.
 
 ### 문서 우선순위
 
@@ -78,8 +78,9 @@ Issue와 관련 APPROVED 문서를 먼저 확인해줘.
 | 조사와 진단만 허용 | 읽기·검색·보고. 파일 변경 금지 |
 | 파일 수정과 검증까지 허용 | 수정과 검증. commit 금지 |
 | 검증된 로컬 commit까지 허용 | 수정, 검증, 관련 로컬 commit |
+| 검증된 로컬 commit 및 push·PR 생성까지 허용 | 수정, 검증, 관련 로컬 commit, 사전 보고 후 해당 Issue 범위의 branch push와 PR 생성. 병합·force push 금지 |
 
-권한이 불분명하면 시작하지 않는다. 어떤 선택값도 push, PR 생성, 병합, force push, 운영 데이터 변경, secret 취급을 허용하지 않는다. 필요하면 사람이 별도로 승인한다.
+Issue에 선택된 권한은 해당 Issue 작업에 한해 유효하다. 권한이 불분명하면 원격 변경 전에 명확히 한다. push 및 PR 생성 권한은 위 선택값 또는 사용자의 별도 명시적 승인으로 부여할 수 있다. 어느 선택값도 병합, force push, 운영 데이터 변경, secret 취급을 허용하지 않는다.
 
 Decision Issue는 구현 권한을 주지 않는다. `대안 조사 → 팀 결정 → ADR 승인 → 구현 Issue → 구현` 순서를 따른다.
 
@@ -114,21 +115,24 @@ git add <검토한 단위 파일>
 git commit -m "feat(evaluation): SnapshotEvaluation Persistence Adapter 구현"
 ```
 
-## 7. push 전 검증 및 원격 작업 절차
+## 7. push 및 PR 작성 절차
 
-1. **push 전 사전 검증 보고**:
-   - 원격 push를 실행하기 전, 다음 항목을 사용자에게 명시적으로 제시하고 보고한다:
-     - 커밋 로그 (`git log -n 5 --oneline`)
-     - 파일 통계 (`git diff --stat dev..HEAD` 또는 `git diff --stat origin/dev..HEAD`)
-     - Staged/Committed diff 변경 범위
-2. **이미 push된 커밋 재구성 가이드**:
+1. **원격 권한 확인과 push 전 보고**:
+   - Issue 권한 선택값 또는 사용자의 별도 명시적 승인에 push가 포함되는지 확인한다. 권한을 추론하거나 승인 경계를 반복 확인하지 않는다.
+   - push 전에 커밋 로그 (`git log -n 5 --oneline`), 파일 통계 (`git diff --stat dev..HEAD` 또는 `git diff --stat origin/dev..HEAD`), staged/committed diff 범위를 보고한다.
+2. **PR 템플릿 확인 및 작성**:
+   - PR을 만들기 직전에 대상 저장소의 기본 branch에 있는 `.github/pull_request_template.md`를 확인한다. 템플릿이 여러 개면 현재 변경에 맞는 템플릿을 선택한다.
+   - 템플릿의 섹션을 유지하고 결과, 범위와 Non-Goals, 계약 영향, 검증 결과, 미검증 사유, 리뷰 포인트를 실제 작업 내용으로 채운다. 해당 없는 항목은 `없음`으로 표시하고 기본 placeholder와 빈 체크 항목을 남기지 않는다.
+   - 관련 Issue를 연결할 때 저장소의 기본 branch와 PR base를 확인한다. GitHub의 `Closes #N` 자동 종료는 PR이 기본 branch를 대상으로 할 때만 적용된다. 다른 branch 대상 PR은 해당 키워드에 의존하지 말고, 완료 후 Issue를 별도로 닫거나 필요한 연결을 수동으로 확인한다.
+   - 생성 후 본문이 템플릿 구조와 실제 검증 결과를 반영하는지 다시 확인한다.
+3. **이미 push된 커밋 재구성 가이드**:
    - 원격에 이미 push된 커밋을 재구성/분리해야 할 경우:
      - 현재 branch와 worktree가 격리되어 있는지 확인한다.
      - `--force-with-lease` 옵션의 필요성과 다른 사용자의 작업을 덮어쓸 위험성을 사전에 명확히 안내한다.
 
 ## 8. 완료 보고와 사람 검토
 
-변경·비변경 영역, branch와 commit, 검증 결과와 미검증, 계약 영향, 판단과 리뷰 지점을 보고한다. push·PR·병합 여부도 명시한다. 사람은 Issue 완료 조건, 전체 diff, 테스트, 계약 영향과 commit을 확인한 뒤 원격 작업을 승인한다.
+변경·비변경 영역, branch와 commit, 검증 결과와 미검증, 계약 영향, 판단과 리뷰 지점을 보고한다. push·PR·병합 여부도 명시한다. 사람은 Issue 완료 조건, 전체 diff, 테스트, 계약 영향과 commit을 확인하고 병합을 판단한다.
 
 ## 회귀 방지 예시: PR #77 사례
 

@@ -1,12 +1,12 @@
 <!--
 리뷰 준비 전 초안이라면 Draft PR을 사용해 주세요.
-병합 시 Issue를 종료하려면 Closes, 연결만 하려면 Refs를 사용합니다.
+`Closes #N`은 PR 대상이 저장소 기본 branch일 때 병합 후 Issue를 자동 종료합니다. 다른 branch 대상 PR은 Issue를 별도로 연결·종료해 주세요.
 해당하지 않는 안내 문구와 빈 항목은 정리해도 됩니다.
 -->
 
 ## 관련 Issue
 
-Closes #
+관련 Issue: #
 
 ## 결과
 

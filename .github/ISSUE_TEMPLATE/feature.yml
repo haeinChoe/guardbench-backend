@@ -90,11 +90,12 @@ body:
     id: agent_permission
     attributes:
       label: 에이전트 작업 범위
-      description: Issue 자체는 push, PR 생성, 병합 또는 force push 권한을 부여하지 않습니다.
+      description: 선택한 작업 범위만 허용됩니다. push와 PR 생성 선택값에도 병합 권한은 포함되지 않습니다.
       options:
-        - 검증된 로컬 커밋까지 허용
-        - 파일 수정과 검증까지 허용 — 커밋 금지
         - 조사와 진단만 허용 — 파일 변경 금지
+        - 파일 수정과 검증까지 허용 — 커밋 금지
+        - 검증된 로컬 커밋까지 허용
+        - 검증된 로컬 커밋 및 push·PR 생성까지 허용 — 병합 금지
     validations:
       required: true
 
