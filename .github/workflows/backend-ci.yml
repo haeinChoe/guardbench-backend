@@ -2,9 +2,9 @@ name: Backend CI
 
 on:
   pull_request:
-    branches: [dev]
+    branches: [dev, main]
   push:
-    branches: [dev]
+    branches: [dev, main]
   workflow_dispatch:
     inputs:
       deployment_target:
@@ -30,7 +30,7 @@ permissions:
 jobs:
   changes:
     name: detect verification scope
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/dev')
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     outputs:
       application_source: ${{ steps.scope.outputs.application_source }}
@@ -62,13 +62,16 @@ jobs:
 
   workflow_tests:
     name: workflow tests
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/dev')
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Test ECS deployment verification
         shell: bash
         run: bash scripts/test-verify-ecs-deployment.sh
+      - name: Test Backend CI branch and deployment policy
+        shell: bash
+        run: bash scripts/test-backend-ci-branch-policy.sh
 
   test_fast:
     name: testFast
@@ -442,7 +445,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
-    name: deploy ${{ github.event_name == 'workflow_dispatch' && inputs.deployment_target || 'dev' }}
+    name: deploy ${{ github.event_name == 'workflow_dispatch' && inputs.deployment_target || 'staging' }}
     needs: [verify, changes]
     if: >-
       always() &&
@@ -452,16 +455,17 @@ jobs:
         inputs.deployment_mode == 'infrastructure' &&
         needs.verify.result == 'skipped')
       ) &&
-      github.ref == 'refs/heads/dev' &&
       (
-        (github.event_name == 'push' && needs.changes.outputs.application_source == 'true') ||
-        github.event_name == 'workflow_dispatch'
+        (github.event_name == 'push' &&
+        github.ref == 'refs/heads/main' &&
+        needs.changes.outputs.application_source == 'true') ||
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev')
       )
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.deployment_target || 'dev' }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.deployment_target || 'staging' }}
     concurrency:
-      group: guardbench-${{ github.event_name == 'workflow_dispatch' && inputs.deployment_target || 'dev' }}-application-deployment
+      group: guardbench-${{ github.event_name == 'workflow_dispatch' && inputs.deployment_target || 'staging' }}-application-deployment
       cancel-in-progress: false
     permissions:
       contents: read
@@ -475,7 +479,7 @@ jobs:
       ECS_CONTAINER_NAME: ${{ vars.ECS_CONTAINER_NAME }}
       ECS_TASK_DEFINITION_FAMILY: ${{ vars.ECS_TASK_DEFINITION_FAMILY }}
       IMAGE_TAG: ${{ github.sha }}
-      DEPLOYMENT_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.deployment_target || 'dev' }}
+      DEPLOYMENT_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.deployment_target || 'staging' }}
       DEPLOYMENT_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.deployment_mode == 'source' && 'manual-source' || github.event_name == 'workflow_dispatch' && 'manual-infrastructure' || 'automatic-source' }}
     steps:
       - uses: actions/checkout@v4
@@ -489,7 +493,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$DEPLOYMENT_TARGET" in
-            dev|performance) ;;
+            staging|dev|performance) ;;
             *) echo "Unsupported deployment target: ${DEPLOYMENT_TARGET}" >&2; exit 1 ;;
           esac
           test -n "$AWS_DEPLOY_ROLE_ARN"

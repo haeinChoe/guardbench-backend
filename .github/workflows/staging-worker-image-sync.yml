@@ -1,8 +1,9 @@
-name: Dev Worker Image Sync
+name: Staging Worker Image Sync
 
 on:
   workflow_run:
     workflows: ["Backend CI"]
+    branches: [main]
     types: [completed]
 
 permissions:
@@ -10,7 +11,7 @@ permissions:
 
 jobs:
   detect:
-    name: detect successful dev deployment
+    name: detect successful staging deployment
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -19,7 +20,7 @@ jobs:
     outputs:
       should_sync: ${{ steps.detect.outputs.should_sync }}
     steps:
-      - name: Detect successful deploy dev job
+      - name: Detect successful deploy staging job
         id: detect
         env:
           GH_TOKEN: ${{ github.token }}
@@ -32,24 +33,24 @@ jobs:
             "/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=100" \
             --jq '[.jobs[]]')"
 
-          if jq -e 'any(.[]; .name == "deploy dev" and .conclusion == "success")' \
+          if jq -e 'any(.[]; .name == "deploy staging" and .conclusion == "success")' \
             <<< "$jobs" >/dev/null; then
             echo 'should_sync=true' >> "$GITHUB_OUTPUT"
-            echo 'Backend CI completed a successful dev deployment.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Backend CI completed a successful staging deployment.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'should_sync=false' >> "$GITHUB_OUTPUT"
-            echo 'No successful deploy dev job; Worker sync is not required.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'No successful deploy staging job; Worker sync is not required.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
   sync_worker:
-    name: sync dev worker revision
+    name: sync staging worker revision
     needs: detect
     if: needs.detect.outputs.should_sync == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: dev
+    environment: staging
     concurrency:
-      group: guardbench-dev-worker-image-sync
+      group: guardbench-staging-worker-image-sync
       cancel-in-progress: false
     permissions:
       contents: read
@@ -63,7 +64,7 @@ jobs:
       WORKER_ECS_SERVICE: guardbench-dev-worker
       WORKER_ECS_TASK_DEFINITION_FAMILY: guardbench-dev-worker
     steps:
-      - name: Validate dev deployment configuration
+      - name: Validate staging deployment configuration
         shell: bash
         run: |
           set -euo pipefail
@@ -129,7 +130,7 @@ jobs:
 
           echo "uri=${api_image}" >> "$GITHUB_OUTPUT"
           {
-            echo '### Dev API revision'
+            echo '### Staging API revision'
             echo "- Service: ${API_ECS_SERVICE}"
             echo "- Task definition: ${api_task_definition}"
             echo "- Image: ${api_image}"
@@ -281,7 +282,7 @@ jobs:
           test "$deployed_worker_concurrency" = "8"
 
           {
-            echo '### Dev Worker revision synchronized'
+            echo '### Staging Worker revision synchronized'
             echo "- Service: ${WORKER_ECS_SERVICE}"
             echo "- Task definition: ${actual_worker_task_definition}"
             echo "- Image: ${deployed_worker_image}"
