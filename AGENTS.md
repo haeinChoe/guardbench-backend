@@ -85,7 +85,7 @@ SQS, 외부 Provider, Outbox, Worker 등 retry가 존재하는 경로를 설계�
 - 커밋 전에 현재 Issue 범위와 변경 파일이 일치하는지 `git status` 및 staged diff로 점검한다.
 - push 전에 commit log, 파일 통계(`git diff --stat`), staged/committed diff 범위를 반드시 확인하고 보고한다.
 - 이미 push된 커밋을 분리/재구성해야 할 때는 branch/worktree 격리 여부와 `force-with-lease` 필요성 및 위험성을 명확히 안내한다.
-- push, PR 생성, 병합, force push는 사람의 명시적 승인 없이 수행하지 않는다.
+- push와 PR 생성은 Issue의 명시된 권한 또는 사용자의 별도 명시적 승인 범위에서만 수행한다. 병합과 force push는 별도 승인을 요구한다. Issue·PR 작성 절차는 [AI 개발 워크플로](docs/ai-development/workflow.md)를 따른다.
 - 검증하지 않은 결과를 완료했다고 표현하지 않는다.
 
 ## 코드 리뷰

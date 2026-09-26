@@ -1,6 +1,6 @@
 <!--
 리뷰 준비 전 초안이라면 Draft PR을 사용해 주세요.
-병합 시 Issue를 종료하려면 Closes, 연결만 하려면 Refs를 사용합니다.
+`Closes #N`은 기본 branch PR 병합 시 GitHub가 처리하고, `dev` 대상 PR은 병합 push 후 저장소 workflow가 같은 저장소의 열린 Issue를 종료합니다. 다른 대상 branch에서는 자동 종료되지 않습니다.
 해당하지 않는 안내 문구와 빈 항목은 정리해도 됩니다.
 -->
 
