@@ -21,9 +21,10 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.retries.api.RetryStrategy;
 import software.amazon.awssdk.services.sagemakerruntime.SageMakerRuntimeClient;
 
-/** Worker 모드에서 SageMaker Response Behavior Classifier adapter를 조립한다. */
+/** Worker 모드이고 classifier provider가 sagemaker(기본값)이면 SageMaker Response Behavior Classifier adapter를 조립한다. */
 @Configuration
 @ConditionalOnProperty(name = "guardbench.worker.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "guardbench.evaluator.provider", havingValue = "sagemaker", matchIfMissing = true)
 @EnableConfigurationProperties(SageMakerProperties.class)
 class SageMakerEvaluatorConfiguration {
 
