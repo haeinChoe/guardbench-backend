@@ -64,6 +64,20 @@ guardbench:
     # 성능 환경의 승인된 internal ALB hostname만 정확히 일치시켜 private 주소를 허용한다.
     # 와일드카드와 private IP literal은 허용하지 않는다.
     allowed-private-hostnames: []
+  # Response Behavior Classifier provider 선택 (#12)
+  # sagemaker(기본값): SageMaker Runtime InvokeEndpoint
+  # openai-compatible: chat completions URL 직접 호출 (예: 로컬 vLLM)
+  evaluator:
+    provider: ${GUARDBENCH_EVALUATOR_PROVIDER:sagemaker}
+  # OpenAI-compatible classifier 설정. provider=openai-compatible일 때만 사용한다.
+  # url·model·system-prompt가 비어 있으면 기동은 되지만 classifier 호출 시점에 실패한다.
+  # 호출 한도는 연결 5초 + 응답 대기 15초 기본값이며 합계는 45초 claim lease 미만이어야 한다.
+  openai-compatible:
+    classifier:
+      chat-completions-url: ${OPENAI_COMPATIBLE_CLASSIFIER_URL:}
+      model: ${OPENAI_COMPATIBLE_CLASSIFIER_MODEL:}
+      system-prompt: ${OPENAI_COMPATIBLE_CLASSIFIER_SYSTEM_PROMPT:}
+      user-prompt-template: ${OPENAI_COMPATIBLE_CLASSIFIER_USER_PROMPT_TEMPLATE:}
   # SageMaker Runtime Provider 호출 한도 (ADR 0005: 재시도 포함 전체 15초, claim lease 45초 미만)
   # 실측 latency(P95 200ms 이하)는 15초 한도보다 훨씬 낮아 충분한 마진을 갖는다.
   # max-attempts는 1(재시도 없음)로 고정한다. Provider business retry(PROVIDER_UNAVAILABLE/
