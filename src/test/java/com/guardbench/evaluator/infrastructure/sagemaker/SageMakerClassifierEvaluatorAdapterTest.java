@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 
+import com.guardbench.evaluator.infrastructure.classifier.ClassifierEvaluatorStore;
 import com.guardbench.testrun.application.port.out.EvaluatorExecutionResult;
 import com.guardbench.testrun.application.port.out.EvaluatorFailureCode;
 
@@ -49,7 +50,7 @@ class SageMakerClassifierEvaluatorAdapterTest {
     private SageMakerRuntimeClient client;
 
     @Mock
-    private SageMakerClassifierEvaluatorStore evaluatorStore;
+    private ClassifierEvaluatorStore evaluatorStore;
 
     @Captor
     private ArgumentCaptor<InvokeEndpointRequest> requestCaptor;
@@ -213,7 +214,7 @@ class SageMakerClassifierEvaluatorAdapterTest {
 
     private SageMakerClassifierEvaluatorAdapter adapter() {
         when(evaluatorStore.findByReference("evaluator-ref"))
-                .thenReturn(Optional.of(new SageMakerClassifierEvaluatorStore.SageMakerClassifierEvaluator(
+                .thenReturn(Optional.of(new ClassifierEvaluatorStore.ClassifierEvaluator(
                         "evaluator-ref", "SAGEMAKER", ENDPOINT_NAME)));
         return new SageMakerClassifierEvaluatorAdapter(client, evaluatorStore, classifierProperties(), OBJECT_MAPPER);
     }

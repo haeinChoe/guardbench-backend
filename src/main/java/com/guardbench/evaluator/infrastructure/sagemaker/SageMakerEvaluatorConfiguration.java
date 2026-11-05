@@ -8,6 +8,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import com.guardbench.evaluator.infrastructure.classifier.ClassifierEvaluatorStore;
 import com.guardbench.testrun.application.port.out.EvaluatorExecutionPort;
 
 import tools.jackson.databind.ObjectMapper;
@@ -34,7 +35,7 @@ class SageMakerEvaluatorConfiguration {
     @Bean
     EvaluatorExecutionPort evaluatorExecutionPort(
             SageMakerRuntimeClient sageMakerRuntimeClient,
-            SageMakerClassifierEvaluatorStore evaluatorStore,
+            ClassifierEvaluatorStore evaluatorStore,
             SageMakerClassifierProperties classifierProperties,
             ObjectMapper objectMapper
     ) {
