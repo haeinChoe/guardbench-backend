@@ -1,5 +1,6 @@
 package com.guardbench.evaluator.infrastructure.sagemaker;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -11,11 +12,12 @@ import com.guardbench.testrun.application.port.out.EvaluatorRegistration;
  * Classifier의 provider/endpoint 식별자를 조립한다.
  *
  * <p>{@link SageMakerEvaluatorConfiguration}과 달리 {@code guardbench.worker.enabled} 조건 없이
- * 항상 활성화된다. TestRun 접수 시 실제 실행에 사용할 classifier를 재현 가능하게
+ * provider가 sagemaker(기본값)이면 항상 활성화된다. TestRun 접수 시 실제 실행에 사용할 classifier를 재현 가능하게
  * {@link com.guardbench.testrun.domain.EvaluatorReference}로 고정하려면 API 모드에서도 이 식별자가
  * 필요하다.
  */
 @Configuration
+@ConditionalOnProperty(name = "guardbench.evaluator.provider", havingValue = "sagemaker", matchIfMissing = true)
 @EnableConfigurationProperties(SageMakerClassifierProperties.class)
 class SageMakerClassifierRegistrationConfiguration {
 

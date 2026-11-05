@@ -22,7 +22,7 @@ class SageMakerClassifierPropertiesTest {
                 new SageMakerClassifierProperties(ENDPOINT_NAME, SYSTEM_PROMPT, null);
 
         assertTrue(properties.isConfigured());
-        String rendered = properties.renderUserMessage("prompt-value", "response-value");
+        String rendered = properties.prompt().renderUserMessage("prompt-value", "response-value");
         assertTrue(rendered.contains("prompt-value"));
         assertTrue(rendered.contains("response-value"));
     }
@@ -34,7 +34,7 @@ class SageMakerClassifierPropertiesTest {
                 ENDPOINT_NAME, SYSTEM_PROMPT, "REQUEST=%s RESPONSE=%s");
 
         assertTrue(properties.isConfigured());
-        String rendered = properties.renderUserMessage("prompt-value", "response-value");
+        String rendered = properties.prompt().renderUserMessage("prompt-value", "response-value");
         assertTrue(rendered.contains("prompt-value"));
         assertTrue(rendered.contains("response-value"));
     }
