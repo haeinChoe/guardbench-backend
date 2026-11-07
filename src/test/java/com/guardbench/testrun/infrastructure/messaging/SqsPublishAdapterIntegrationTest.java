@@ -29,10 +29,9 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 /**
  * SqsPublishAdapter의 SendMessageBatch 발행 통합 테스트다.
  *
- * <p>ADR 0005: batch 안 한 항목의 발행 실패가 나머지 항목 처리를 막지 않아야 한다.
- * SQS SendMessageBatch는 메시지 본문이 256KB를 넘는 항목만 batch API 수준에서
- * 개별 실패로 분류하므로, 정상 항목과 과대 payload 항목을 같은 batch에 섞어
- * 부분 실패를 실제 SQS 프로토콜로 재현한다.
+ * <p>batch 안 한 항목만 실패하는 경우(ADR 0005)는 {@link SqsPublishAdapterTest}가 검증한다.
+ * 테스트용 SQS 에뮬레이터(Floci)는 실제 SQS가 항목별로 거부하는 제어 문자 본문을
+ * 받아들이므로 이 통합 테스트로는 재현할 수 없다(ADR 0015).
  */
 class SqsPublishAdapterIntegrationTest {
 
@@ -92,30 +91,6 @@ class SqsPublishAdapterIntegrationTest {
 
         List<Message> delivered = receiveAll();
         assertThat(delivered).hasSize(2);
-    }
-
-    @Test
-    @DisplayName("batch 안 한 항목이 허용되지 않는 문자를 포함하면 그 항목만 실패로 반환되고 나머지는 발행된다")
-    void invalidEntryFailsWithoutBlockingOthers() {
-        SqsPublishAdapter adapter = new SqsPublishAdapter(sqs, Map.of(TestRunQueue.RESOLVE, queueUrl));
-
-        PublishBatchEntry normal = new PublishBatchEntry(UUID.randomUUID(), samplePayload("1"));
-        // SQS는 U+0000-U+0008, U+000B, U+000C, U+000E-U+001F 등 제어 문자를 포함한
-        // 메시지 본문을 InvalidMessageContents로 개별 거부한다(batch 전체가 아니다).
-        PublishBatchEntry invalid = new PublishBatchEntry(UUID.randomUUID(), samplePayload("2") + "\u0000");
-
-        PublishBatchResult result = adapter.publishBatch(TestRunQueue.RESOLVE, List.of(normal, invalid));
-
-        assertThat(result.succeeded(normal.eventId()))
-                .as("정상 항목은 같은 batch의 다른 항목 실패와 무관하게 발행돼야 한다")
-                .isTrue();
-        assertThat(result.succeeded(invalid.eventId()))
-                .as("허용되지 않는 문자를 포함한 항목은 실패로 반환돼야 한다")
-                .isFalse();
-
-        List<Message> delivered = receiveAll();
-        assertThat(delivered).hasSize(1);
-        assertThat(delivered.getFirst().body()).contains("\"testRunId\":1");
     }
 
     private static List<Message> receiveAll() {
