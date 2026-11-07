@@ -67,6 +67,10 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  * <p>시간 기반 설정은 절대값보다 관계로 검증한다.
  * <ul>
  *   <li>Scenario 1: {@code visibility timeout < claim lease} (#149와 동일한 순서 관계)</li>
+ *   <li>재시도 소진 전에 DLQ로 이동하지 않도록 {@code maxReceiveCount × visibility timeout}이
+ *       Worker attempt 3회에 필요한 시간({@code (MAX_EXECUTION_ATTEMPTS - 1) × claim lease})보다
+ *       길어야 한다. 현재 값은 5 × 2s = 10s &gt; 2 × 3s = 6s다. visibility timeout을 1s로 두면
+ *       5s &lt; 6s가 되어 3번째 attempt 전에 메시지가 DLQ로 이동한다(ADR 0015).</li>
  *   <li>Scenario 2/3/4/5: claim lease와 finalize 재시도 간격을 짧게 유지해 bounded 시간 안에 수렴을 관측한다.</li>
  * </ul>
  *
@@ -82,8 +86,9 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
                 "guardbench.sqs.polling.delay-ms=100",
                 "guardbench.sqs.outbox.delay-ms=100",
                 "guardbench.sqs.outbox.initial-delay-ms=0",
-                // #149 순서 관계 재현: visibility timeout(1s) < claim lease(3s)
-                "guardbench.sqs.polling.visibility-timeout-seconds=1",
+                // #149 순서 관계 재현: visibility timeout(2s) < claim lease(3s)
+                // 동시에 maxReceiveCount(5) × 2s > (attempt 3 - 1) × claim lease(3s)를 지킨다.
+                "guardbench.sqs.polling.visibility-timeout-seconds=2",
                 "guardbench.claim.lease-seconds=3"
         })
 @Import({PostgresTestConfiguration.class, SqsReliabilityConvergenceIntegrationTest.SqsReliabilityTestConfiguration.class})
@@ -170,7 +175,7 @@ class SqsReliabilityConvergenceIntegrationTest {
         sendExecutionRequested(testRunId, snapshotId);
 
         // ALWAYS_TIMEOUT이므로 MAX_EXECUTION_ATTEMPTS(3) 소진까지 애플리케이션 레벨에서
-        // TIMED_OUT으로 수렴하며 정상 ACK된다. 이 과정에서 visibility timeout(1s) < claim
+        // TIMED_OUT으로 수렴하며 정상 ACK된다. 이 과정에서 visibility timeout(2s) < claim
         // lease(3s) 관계 때문에, claim lease가 아직 유효한 동안 재전달된 메시지는
         // AlreadyHeld로 처리되어 claim 시도(tryAcquire 호출, SQS 재전달의 proxy) 횟수가
         // 실제 claim 획득 성공(=Provider invocation) 횟수보다 많아진다.
@@ -273,7 +278,7 @@ class SqsReliabilityConvergenceIntegrationTest {
         // 2) 메시지가 실제로 ACK(삭제)되었는지 직접 검증한다.
         //    "큐 depth가 일시적으로 0으로 보이는 순간"은 메시지가 아직 in-flight(재전달 대기)
         //    상태일 때도 관측될 수 있어 ACK의 증거가 될 수 없다. 따라서 maxReceiveCount(5) *
-        //    visibility timeout(1s)을 충분히 넘는 시간만큼 실제로 기다린 뒤(ACK되지 않고
+        //    visibility timeout(2s)을 충분히 넘는 시간만큼 실제로 기다린 뒤(ACK되지 않고
         //    방치되었다면 이 시간 안에 반드시 DLQ로 이동한다), 원본 큐와 DLQ를 한 번에
         //    최종 스냅샷으로 확인한다.
         await().atMost(Duration.ofSeconds(20))
@@ -289,7 +294,7 @@ class SqsReliabilityConvergenceIntegrationTest {
                 .build()).messages();
 
         assertThat(remaining)
-                .as("ACK된 finalize 메시지는 maxReceiveCount(5) * visibility timeout(1s)을 넘는 "
+                .as("ACK된 finalize 메시지는 maxReceiveCount(5) * visibility timeout(2s)을 넘는 "
                         + "충분한 시간이 지나도 원본 큐에 재전달되어 남아 있지 않아야 한다")
                 .isEmpty();
         assertThat(queueDepth(TestRunQueue.FINALIZE.deadLetterQueueName()))
@@ -554,7 +559,7 @@ class SqsReliabilityConvergenceIntegrationTest {
             SQS.createQueue(CreateQueueRequest.builder()
                     .queueName(queue.queueName())
                     .attributes(Map.of(
-                            QueueAttributeName.VISIBILITY_TIMEOUT, "1",
+                            QueueAttributeName.VISIBILITY_TIMEOUT, "2",
                             QueueAttributeName.REDRIVE_POLICY,
                             "{\"deadLetterTargetArn\":\"%s\",\"maxReceiveCount\":\"5\"}".formatted(dlqArn)))
                     .build());
