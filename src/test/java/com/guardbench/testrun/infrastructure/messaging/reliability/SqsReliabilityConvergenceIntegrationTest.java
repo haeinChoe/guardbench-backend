@@ -22,8 +22,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.localstack.LocalStackContainer;
-import org.testcontainers.utility.DockerImageName;
+import io.floci.testcontainers.FlociContainer;
 
 import com.guardbench.testrun.application.messaging.TestRunMessageCodec;
 import com.guardbench.testrun.application.messaging.TestRunQueue;
@@ -43,14 +42,14 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
 import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 
 /**
- * Issue #153: LocalStack SQS + PostgreSQL Testcontainers + 실제 Worker consumer +
+ * Issue #153: Floci SQS + PostgreSQL Testcontainers + 실제 Worker consumer +
  * deterministic Provider Stub으로 SQS delivery retry, claim lease 경합, Provider
  * business retry, finalization convergence의 결합 동작을 검증한다.
  *
  * <p>이 suite는 두 계약을 구분해서 다룬다.
  * <ul>
  *   <li><b>Harness/infrastructure 계약</b> — 현재 코드에서도 항상 성립해야 한다.
- *       LocalStack redrive, 실제 claim 경합, duplicate delivery 관측,
+ *       Floci redrive, 실제 claim 경합, duplicate delivery 관측,
  *       Provider invocation count 관측 등 이 테스트 도구 자체의 신뢰성이다.</li>
  *   <li><b>#149 regression 계약</b> — #157에서 production fix가 구현되었다.
  *       {@code AlreadyHeld}와 Provider attempt 분리, partial finalize ACK,
@@ -91,29 +90,28 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class SqsReliabilityConvergenceIntegrationTest {
 
-    private static final LocalStackContainer LOCAL_STACK = new LocalStackContainer(
-            DockerImageName.parse("localstack/localstack:3.0"))
-            .withServices(LocalStackContainer.Service.SQS);
+    private static final FlociContainer FLOCI = new FlociContainer(
+            "floci/floci:2.4.0");
 
     private static final SqsClient SQS;
 
     static {
-        LOCAL_STACK.start();
+        FLOCI.start();
         SQS = SqsClient.builder()
-                .endpointOverride(URI.create(LOCAL_STACK.getEndpoint().toString()))
-                .region(Region.of(LOCAL_STACK.getRegion()))
+                .endpointOverride(URI.create(FLOCI.getEndpoint().toString()))
+                .region(Region.of(FLOCI.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(LOCAL_STACK.getAccessKey(), LOCAL_STACK.getSecretKey())))
+                        AwsBasicCredentials.create(FLOCI.getAccessKey(), FLOCI.getSecretKey())))
                 .build();
         createWorkerQueuesWithRedrive();
-        System.setProperty("aws.accessKeyId", LOCAL_STACK.getAccessKey());
-        System.setProperty("aws.secretAccessKey", LOCAL_STACK.getSecretKey());
+        System.setProperty("aws.accessKeyId", FLOCI.getAccessKey());
+        System.setProperty("aws.secretAccessKey", FLOCI.getSecretKey());
     }
 
     @DynamicPropertySource
     static void localStackProperties(DynamicPropertyRegistry registry) {
-        registry.add("guardbench.sqs.endpoint-override", () -> LOCAL_STACK.getEndpoint().toString());
-        registry.add("guardbench.sqs.region", LOCAL_STACK::getRegion);
+        registry.add("guardbench.sqs.endpoint-override", () -> FLOCI.getEndpoint().toString());
+        registry.add("guardbench.sqs.region", FLOCI::getRegion);
     }
 
     @Autowired
@@ -147,10 +145,10 @@ class SqsReliabilityConvergenceIntegrationTest {
     }
 
     @AfterAll
-    void stopLocalStack() {
+    void stopFloci() {
         applicationSqsClient.close();
         SQS.close();
-        LOCAL_STACK.stop();
+        FLOCI.stop();
     }
 
     // ─────────────────────────────────────────────────────────────

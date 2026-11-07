@@ -12,8 +12,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.localstack.LocalStackContainer;
-import org.testcontainers.utility.DockerImageName;
+import io.floci.testcontainers.FlociContainer;
 
 import com.guardbench.testrun.application.messaging.TestRunQueue;
 import com.guardbench.testrun.application.port.out.PublishBatchResult;
@@ -37,21 +36,20 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
  */
 class SqsPublishAdapterIntegrationTest {
 
-    private static final LocalStackContainer LOCAL_STACK = new LocalStackContainer(
-            DockerImageName.parse("localstack/localstack:3.0"))
-            .withServices(LocalStackContainer.Service.SQS);
+    private static final FlociContainer FLOCI = new FlociContainer(
+            "floci/floci:2.4.0");
 
     private static SqsClient sqs;
     private static String queueUrl;
 
     @BeforeAll
     static void setup() {
-        LOCAL_STACK.start();
+        FLOCI.start();
         sqs = SqsClient.builder()
-                .endpointOverride(URI.create(LOCAL_STACK.getEndpoint().toString()))
-                .region(Region.of(LOCAL_STACK.getRegion()))
+                .endpointOverride(URI.create(FLOCI.getEndpoint().toString()))
+                .region(Region.of(FLOCI.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(LOCAL_STACK.getAccessKey(), LOCAL_STACK.getSecretKey())))
+                        AwsBasicCredentials.create(FLOCI.getAccessKey(), FLOCI.getSecretKey())))
                 .build();
         queueUrl = sqs.createQueue(CreateQueueRequest.builder()
                 .queueName("sqs-publish-adapter-test").build()).queueUrl();
@@ -62,7 +60,7 @@ class SqsPublishAdapterIntegrationTest {
         if (sqs != null) {
             sqs.close();
         }
-        LOCAL_STACK.stop();
+        FLOCI.stop();
     }
 
     @BeforeEach
