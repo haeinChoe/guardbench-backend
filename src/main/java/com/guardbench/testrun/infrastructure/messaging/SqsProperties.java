@@ -10,7 +10,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties(prefix = "guardbench.sqs")
 public record SqsProperties(
-        /** SQS endpoint override (LocalStack, 로컬 개발 등). null이면 SDK 기본값. */
+        /** SQS endpoint override (Floci 같은 로컬 SQS 에뮬레이터 등). null이면 SDK 기본값. */
         String endpointOverride,
         /** AWS region (기본 ap-northeast-2). */
         String region,

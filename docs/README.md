@@ -56,6 +56,7 @@
 | 결정 | [ADR 0012: TestSuite/TestCase 영구 삭제와 historical identity](decisions/0012-testdefinition-hard-delete-and-historical-identity.md) | APPROVED | Backend | 2026-09-03 | 없음 |
 | 결정 | [ADR 0013: Response Behavior Classifier 실행 계약](decisions/0013-response-behavior-classifier.md) | APPROVED | Backend | 2026-09-04 | 없음 |
 | 결정 | [ADR 0014: HTTP 표준 오류 응답 Envelope](decisions/0014-http-standard-error-envelope.md) | APPROVED | Backend | 2026-09-06 | GitHub Issue #24 |
+| 결정 | [ADR 0015: SQS 통합 테스트 에뮬레이터를 Floci로 교체](decisions/0015-floci-sqs-test-emulator.md) | DRAFT | Backend | 2026-11-07 | GitHub Issue #14 |
 | AI 개발 | [작업 워크플로](ai-development/workflow.md) | APPROVED | Team | 2026-09-26 | 현재 대화에서 승격 |
 | AI 개발 | [Backend CI Branch 검증과 Merge Gate](ai-development/backend-ci-merge-gate.md) | DRAFT | Backend | 2026-09-26 | 없음 |
 | AI 개발 | [코드 리뷰](ai-development/review.md) | APPROVED | Team | 2026-08-31 | PR #20·#23 사례와 Issue #33 |
