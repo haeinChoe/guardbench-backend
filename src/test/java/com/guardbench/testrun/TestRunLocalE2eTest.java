@@ -35,8 +35,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.testcontainers.containers.localstack.LocalStackContainer;
-import org.testcontainers.utility.DockerImageName;
+import io.floci.testcontainers.FlociContainer;
 
 import org.mockserver.integration.ClientAndServer;
 import org.mockserver.matchers.MatchType;
@@ -63,10 +62,10 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * 실제 Spring Boot HTTP API부터 PostgreSQL, Outbox, LocalStack SQS, Worker, Target, Evaluator와
+ * 실제 Spring Boot HTTP API부터 PostgreSQL, Outbox, Floci SQS, Worker, Target, Evaluator와
  * Finalization까지 하나의 TestRun pipeline을 검증한다.
  *
- * <p>SageMaker Runtime은 LocalStack이 제공하지 않으므로 실제 Adapter의 외부 SDK client만 대체한다.
+ * <p>SageMaker Runtime은 테스트 컨테이너로 띄우지 않으므로 실제 Adapter의 외부 SDK client만 대체한다.
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -90,31 +89,30 @@ class TestRunLocalE2eTest {
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration PIPELINE_TIMEOUT = Duration.ofSeconds(30);
 
-    private static final LocalStackContainer LOCAL_STACK = new LocalStackContainer(
-            DockerImageName.parse("localstack/localstack:3.0"))
-            .withServices(LocalStackContainer.Service.SQS);
+    private static final FlociContainer FLOCI = new FlociContainer(
+            "floci/floci:2.4.0");
 
     private static final SqsClient SQS;
 
     static {
-        LOCAL_STACK.start();
+        FLOCI.start();
         SQS = SqsClient.builder()
-                .endpointOverride(URI.create(LOCAL_STACK.getEndpoint().toString()))
-                .region(Region.of(LOCAL_STACK.getRegion()))
+                .endpointOverride(URI.create(FLOCI.getEndpoint().toString()))
+                .region(Region.of(FLOCI.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(LOCAL_STACK.getAccessKey(), LOCAL_STACK.getSecretKey())))
+                        AwsBasicCredentials.create(FLOCI.getAccessKey(), FLOCI.getSecretKey())))
                 .build();
         for (TestRunQueue queue : TestRunQueue.values()) {
             SQS.createQueue(CreateQueueRequest.builder().queueName(queue.queueName()).build());
         }
-        System.setProperty("aws.accessKeyId", LOCAL_STACK.getAccessKey());
-        System.setProperty("aws.secretAccessKey", LOCAL_STACK.getSecretKey());
+        System.setProperty("aws.accessKeyId", FLOCI.getAccessKey());
+        System.setProperty("aws.secretAccessKey", FLOCI.getSecretKey());
     }
 
     @DynamicPropertySource
     static void localStackProperties(DynamicPropertyRegistry registry) {
-        registry.add("guardbench.sqs.endpoint-override", () -> LOCAL_STACK.getEndpoint().toString());
-        registry.add("guardbench.sqs.region", LOCAL_STACK::getRegion);
+        registry.add("guardbench.sqs.endpoint-override", () -> FLOCI.getEndpoint().toString());
+        registry.add("guardbench.sqs.region", FLOCI::getRegion);
     }
 
     @LocalServerPort
@@ -150,10 +148,10 @@ class TestRunLocalE2eTest {
     }
 
     @AfterAll
-    void stopLocalStack() {
+    void stopFloci() {
         applicationSqsClient.close();
         SQS.close();
-        LOCAL_STACK.stop();
+        FLOCI.stop();
     }
 
     @Test

@@ -319,7 +319,7 @@ PR CI에서 실제 AWS 전체 환경을 구성하지 않고도 주요 messaging 
 ```text
 JUnit
 ├─ PostgreSQL Testcontainers
-├─ LocalStack SQS
+├─ Floci SQS
 │  ├─ work-items queue
 │  ├─ work-items DLQ
 │  ├─ finalize queue
@@ -429,7 +429,7 @@ completedAt != null
 
 ```text
 PostgreSQL Testcontainers
-+ LocalStack SQS
++ Floci SQS
 + Provider Stub
 ```
 
@@ -451,7 +451,7 @@ PostgreSQL Testcontainers
 - 실제 네트워크
 - 실제 Application Target/Evaluator 연결
 
-LocalStack과 AWS의 구현 차이, IaC와 Backend 사이의 설정 계약을 최종 확인한다.
+Floci와 AWS의 구현 차이([ADR 0015](../decisions/0015-floci-sqs-test-emulator.md)), IaC와 Backend 사이의 설정 계약을 최종 확인한다.
 
 ### Performance test — 부하 상황에서도 invariant 유지 검증
 
@@ -520,7 +520,7 @@ Performance Test
 - TestRun finalization
 - Worker claim/lease
 - WorkItems/Finalize DLQ semantics
-- LocalStack 기반 reliability integration test
+- Floci 기반 reliability integration test
 - 성능 테스트의 reliability acceptance criteria
 
 향후 Outbox retry command, reconciliation job, Worker 수평 확장 등 비동기 실행 구조를 변경할 때도 동일한 Safety / Liveness / Convergence 관점을 유지한다.

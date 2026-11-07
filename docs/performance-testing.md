@@ -246,8 +246,8 @@ s3://<PERFORMANCE_RESULTS_BUCKET>/performance/results/<run-id>/
 ```
 
 로컬 API에 대한 입력 검증은 `--dry-run`으로 수행할 수 있다. 실제 비동기 Smoke 실행은
-SQS와 Worker가 동작하는 로컬 또는 dev 배포가 필요하다. LocalStack을 사용할 때는
-`PERF_SOURCE_QUEUE_URLS`와 `PERF_DLQ_URLS`에 LocalStack URL을 지정하고
+SQS와 Worker가 동작하는 로컬 또는 dev 배포가 필요하다. 로컬 SQS 에뮬레이터(Floci 등)를 사용할 때는
+`PERF_SOURCE_QUEUE_URLS`와 `PERF_DLQ_URLS`에 에뮬레이터 URL을 지정하고
 `PERF_SQS_ENDPOINT_URL`을 추가한다. AWS metric이 없는 로컬 실행은 성능 판정용 Baseline으로
 취급하지 않는다.
 

@@ -24,6 +24,7 @@
 | TestRun `FINISHED` 전환과 Quality Gate 원자 저장 | [ADR 0003](0003-result-aggregate-and-write-port-boundaries.md), [ADR 0004](0004-testrun-finalization-atomicity.md), [ADR 0006](0006-independent-domain-contract-boundaries.md) | PostgreSQL 제약은 [ADR 0002](0002-postgresql-persistence-contract.md), Worker 선점·잠금/CAS·retry는 [ADR 0005](0005-async-test-run-execution-contract.md) |
 | Context 간 Port, Integration Adapter, 로컬 ID·VO와 Java 타입 격리 | [ADR 0006](0006-independent-domain-contract-boundaries.md) | Aggregate 저장 경계는 [ADR 0001](0001-domain-type-ownership-and-aggregate-boundaries.md)과 [ADR 0003](0003-result-aggregate-and-write-port-boundaries.md), 최종화는 [ADR 0004](0004-testrun-finalization-atomicity.md) |
 | Worker 선점, 동시 실행, 잠금/CAS, retry·timeout | [ADR 0005](0005-async-test-run-execution-contract.md), [ADR 0006](0006-independent-domain-contract-boundaries.md) | 결과 저장 경계는 [ADR 0003](0003-result-aggregate-and-write-port-boundaries.md), 최종화 불변식은 [ADR 0004](0004-testrun-finalization-atomicity.md), 물리 스키마는 [ADR 0002](0002-postgresql-persistence-contract.md), claim·Outbox 물리 저장은 [ADR 0008](0008-async-testrun-persistence-contract.md) |
+| SQS 통합 테스트 에뮬레이터, 테스트용 visibility·lease 시간 설정 | [ADR 0015](0015-floci-sqs-test-emulator.md) | retry·timeout 계약 자체를 바꾸면 [ADR 0005](0005-async-test-run-execution-contract.md) |
 
 ## 비동기 TestRun 계약 맵
 
@@ -47,6 +48,8 @@ ADR 0010  TestRun 단일 HTTP Target 실행 모델
 └─ ADR 0013  Response Behavior Classifier 실행, Quality Gate와 Regression 역할
 
 ADR 0014  HTTP 표준 오류 응답을 GuardBench Envelope로 통일
+
+ADR 0015  SQS 통합 테스트 에뮬레이터를 Floci로 교체 (DRAFT)
 
 ADR 0006  Context 간 Java 타입 공유와 직접 의존을 제한
 ```
