@@ -1,9 +1,11 @@
 package com.guardbench.testrun.infrastructure.messaging;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.URI;
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -167,10 +169,10 @@ class SqsDlqRedriveIntegrationTest {
                 .build()).queueUrl();
 
         // malformed 메시지 전송
-        sqs.sendMessage(SendMessageRequest.builder()
+        String sentMessageId = sqs.sendMessage(SendMessageRequest.builder()
                 .queueUrl(isolatedQueueUrl)
                 .messageBody("{invalid-json")
-                .build());
+                .build()).messageId();
 
         SqsInboundPollingAdapter adapter = new SqsInboundPollingAdapter(
                 sqs, codec, isolatedQueueUrl, TestRunQueue.RESOLVE,
@@ -181,15 +183,24 @@ class SqsDlqRedriveIntegrationTest {
         int polled = adapter.poll();
         assertEquals(1, polled, "1건의 메시지를 수신해야 한다");
 
-        // 메시지는 삭제되지 않았으므로 visibility timeout 후 다시 보여야 함
-        // (visibilityTimeout=2초이므로 바로 조회하면 안 보이고 2초 후에는 보임)
-        var immediate = sqs.receiveMessage(ReceiveMessageRequest.builder()
+        // 삭제됐다면 queue에서 사라지고, nack이면 visibility timeout 동안 in-flight로 남는다.
+        Map<QueueAttributeName, String> attributes = sqs.getQueueAttributes(GetQueueAttributesRequest.builder()
                 .queueUrl(isolatedQueueUrl)
-                .maxNumberOfMessages(10)
-                .waitTimeSeconds(0)
-                .build()).messages();
-        // visibility timeout 동안이므로 비어 있을 수 있음 (정상)
-        // 2초 후 재확인은 속도를 위해 생략 — 핵심은 DLQ 최종 이동으로 검증
+                .attributeNames(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE)
+                .build()).attributes();
+        assertEquals("1", attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE),
+                "malformed 메시지는 삭제되지 않고 in-flight 상태로 남아야 한다");
+
+        // visibility timeout(2초)이 지나면 같은 메시지가 다시 전달돼야 한다.
+        // 에뮬레이터마다 만료 처리 간격이 달라 정확한 시점 대신 넉넉한 상한으로 기다린다.
+        await().atMost(Duration.ofSeconds(10))
+                .pollInterval(Duration.ofMillis(200))
+                .until(() -> sqs.receiveMessage(ReceiveMessageRequest.builder()
+                                .queueUrl(isolatedQueueUrl)
+                                .maxNumberOfMessages(10)
+                                .waitTimeSeconds(0)
+                                .build()).messages().stream()
+                        .anyMatch(message -> message.messageId().equals(sentMessageId)));
     }
 
     private java.util.List<Message> receiveWithRetry(String queueUrl, int maxAttempts) throws InterruptedException {
