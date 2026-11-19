@@ -35,7 +35,7 @@ dependencies {
 	testImplementation 'org.springframework.boot:spring-boot-testcontainers'
 	testImplementation 'com.tngtech.archunit:archunit:1.5.0'
 	testImplementation 'org.testcontainers:testcontainers-postgresql'
-	testImplementation 'org.testcontainers:testcontainers-localstack:2.0.5'
+	testImplementation 'io.floci:testcontainers-floci-aws:2.17.0'
 	testImplementation 'org.mock-server:mockserver-netty:7.6.0'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

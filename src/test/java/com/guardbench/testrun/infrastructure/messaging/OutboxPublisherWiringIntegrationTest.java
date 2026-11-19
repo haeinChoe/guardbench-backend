@@ -23,8 +23,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.localstack.LocalStackContainer;
-import org.testcontainers.utility.DockerImageName;
+import io.floci.testcontainers.FlociContainer;
 
 import com.guardbench.testrun.application.OutboxPublisher;
 import com.guardbench.testrun.application.messaging.TestRunQueue;
@@ -45,7 +44,7 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
  * Outbox Publisher 운영 경로 통합 테스트다.
  *
  * <p>PENDING row가 실제 SQS queue로 이동하고 PUBLISHED로 전이되는지,
- * 병렬 Publisher가 같은 batch를 중복 발행하지 않는지 LocalStack + PostgreSQL로 검증한다.
+ * 병렬 Publisher가 같은 batch를 중복 발행하지 않는지 Floci + PostgreSQL로 검증한다.
  */
 @SpringBootTest(properties = {
         "guardbench.sqs.enabled=true",
@@ -58,32 +57,31 @@ class OutboxPublisherWiringIntegrationTest {
 
     private static final Instant BASE = Instant.parse("2026-08-26T00:00:00Z");
 
-    private static final LocalStackContainer LOCAL_STACK = new LocalStackContainer(
-            DockerImageName.parse("localstack/localstack:3.0"))
-            .withServices(LocalStackContainer.Service.SQS);
+    private static final FlociContainer FLOCI = new FlociContainer(
+            "floci/floci:2.4.0");
 
     private static SqsClient verificationClient;
 
     static {
-        LOCAL_STACK.start();
+        FLOCI.start();
         verificationClient = SqsClient.builder()
-                .endpointOverride(URI.create(LOCAL_STACK.getEndpoint().toString()))
-                .region(Region.of(LOCAL_STACK.getRegion()))
+                .endpointOverride(URI.create(FLOCI.getEndpoint().toString()))
+                .region(Region.of(FLOCI.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(LOCAL_STACK.getAccessKey(), LOCAL_STACK.getSecretKey())))
+                        AwsBasicCredentials.create(FLOCI.getAccessKey(), FLOCI.getSecretKey())))
                 .build();
         for (TestRunQueue queue : TestRunQueue.values()) {
             verificationClient.createQueue(CreateQueueRequest.builder().queueName(queue.queueName()).build());
         }
         // 운영 코드는 DefaultCredentialsProvider 체인을 사용하므로 테스트에서는 시스템 속성으로 공급한다.
-        System.setProperty("aws.accessKeyId", LOCAL_STACK.getAccessKey());
-        System.setProperty("aws.secretAccessKey", LOCAL_STACK.getSecretKey());
+        System.setProperty("aws.accessKeyId", FLOCI.getAccessKey());
+        System.setProperty("aws.secretAccessKey", FLOCI.getSecretKey());
     }
 
     @DynamicPropertySource
     static void sqsProperties(DynamicPropertyRegistry registry) {
-        registry.add("guardbench.sqs.endpoint-override", () -> LOCAL_STACK.getEndpoint().toString());
-        registry.add("guardbench.sqs.region", LOCAL_STACK::getRegion);
+        registry.add("guardbench.sqs.endpoint-override", () -> FLOCI.getEndpoint().toString());
+        registry.add("guardbench.sqs.region", FLOCI::getRegion);
     }
 
     @Autowired
