@@ -156,6 +156,7 @@ docker push {account}.dkr.ecr.ap-northeast-2.amazonaws.com/guardbench-dev:{git-s
 ```
 
 - ECR tag는 immutable로 설정하고 Task Definition은 `latest`가 아니라 검증한 commit SHA 또는 image digest를 사용한다.
+- `bootBuildImage`는 builder/buildpack을 항상 pull(`pullPolicy=ALWAYS`)해 최신 patch JRE를 받고, CVE-2026-114938 완화를 위해 runtime `JAVA_TOOL_OPTIONS`에 `-XX:-UseBASE64Intrinsics`를 추가한다.
 - Fargate Task는 Linux `X86_64`, CPU `512`, memory `1024 MiB`, container port `8080`이다.
 - ECS Service desired/min/max는 모두 1이며 Service Auto Scaling은 사용하지 않는다. 현재 역할이 결합돼 있어 Queue backlog나 CPU로 Task를 늘리면 API·Publisher·모든 consumer가 함께 늘기 때문이다.
 - rolling deployment는 `minimumHealthyPercent=100`, `maximumPercent=200`, deployment circuit breaker rollback을 사용한다.
