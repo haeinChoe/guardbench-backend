@@ -11,7 +11,7 @@ import com.guardbench.testrun.application.port.out.TargetExecutionResult;
 import com.guardbench.testrun.application.port.out.TargetFailureCode;
 
 /**
- * Issue #153: LocalStack reliability integration test용 deterministic Provider Stub이다.
+ * Issue #153: Floci reliability integration test용 deterministic Provider Stub이다.
  *
  * <p>실제 Bedrock/HTTP Application Target 호출을 대체하여, SQS delivery retry와
  * Provider business retry를 분리 관측할 수 있게 한다. 이 Stub은 실제 invocation

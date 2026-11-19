@@ -218,7 +218,7 @@ GuardBench는 완료된 TestRun에 저장된:
 | Messaging | Amazon SQS |
 | AI Evaluation | Amazon SageMaker Runtime |
 | Application Target | OpenAI-compatible HTTP API |
-| Test | JUnit, Testcontainers, LocalStack, ArchUnit |
+| Test | JUnit, Testcontainers, Floci(SQS 에뮬레이터), ArchUnit |
 | Static Analysis | Qodana JVM Community, SpotBugs |
 | CI | GitHub Actions |
 | Observability | Amazon CloudWatch |
@@ -238,7 +238,7 @@ testFast
 
 integrationTest
 ├─ PostgreSQL Testcontainers
-├─ SQS / LocalStack
+├─ SQS / Floci
 ├─ persistence integration
 └─ async / E2E integration
 ```
