@@ -49,7 +49,7 @@ ADR 0010  TestRun 단일 HTTP Target 실행 모델
 
 ADR 0014  HTTP 표준 오류 응답을 GuardBench Envelope로 통일
 
-ADR 0015  SQS 통합 테스트 에뮬레이터를 Floci로 교체 (DRAFT)
+ADR 0015  SQS 통합 테스트 에뮬레이터를 Floci로 교체
 
 ADR 0006  Context 간 Java 타입 공유와 직접 의존을 제한
 ```

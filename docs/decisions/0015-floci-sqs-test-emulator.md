@@ -1,14 +1,13 @@
 # 0015. SQS 통합 테스트 에뮬레이터를 Floci로 교체
 
-> Status: DRAFT
+> Status: APPROVED
 > Owner: Backend
-> Last reviewed: 2026-11-07
+> Last reviewed: 2026-11-19
 > Canonical source: GitHub
 > Origin: GitHub Issue #14
-> AI assistance: 이 문서의 초안은 LLM의 도움으로 작성되었으며 사람의 검토가 필요합니다.
 
-- ADR Status: PROPOSED
-- Decision date: 2026-11-07
+- ADR Status: ACCEPTED
+- Decision date: 2026-11-19
 - Related Issue: #14
 
 ## Context
@@ -87,10 +86,10 @@ LocalStack은 visibility 만료를 약 2초 단위로만 처리한다. Floci는 
 - 컨테이너 시작은 1.2초에서 약 2.5초로 오히려 느려졌다.
 - 테스트 시간 합계는 약 10% 줄었지만, Gradle 전체 실행 시간은 줄지 않았다. 원인은 확인하지 못했다.
 
-되돌리기
+유지 방침
 
-- 테스트 코드와 `build.gradle`만 바뀌므로, PR revert로 LocalStack 고정 태그 상태로 돌아갈 수 있다.
-- 다만 visibility 2초 설정은 LocalStack에서도 통과하므로 되돌리지 않아도 된다.
+- 저장소에는 Floci만 남기고 LocalStack으로 돌아가지 않는다. LocalStack 고정 태그는 패치를 받을 수 없어 장기 선택지가 아니다.
+- Floci에서 문제가 생기면 Floci 버전을 조정해 해결한다. 그래도 해결되지 않으면 대체 에뮬레이터를 새 ADR에서 검토한다.
 
 ## Validation
 
