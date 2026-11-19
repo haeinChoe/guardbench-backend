@@ -15,8 +15,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.localstack.LocalStackContainer;
-import org.testcontainers.utility.DockerImageName;
+import io.floci.testcontainers.FlociContainer;
 
 import com.guardbench.common.support.fixture.LogCapture;
 import com.guardbench.testrun.application.ExecuteTestRunService;
@@ -40,33 +39,32 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Worker-level E2E 테스트.
  *
- * <p>LocalStack SQS + Polling Adapter + TestDouble Application Service로
+ * <p>Floci SQS + Polling Adapter + TestDouble Application Service로
  * 정상 메시지의 ack, retryable 메시지의 nack을 검증한다.
  * 각 테스트는 독립된 SQS queue를 사용하여 격리한다.
  */
 class SqsWorkerEndToEndTest {
 
-    private static final LocalStackContainer LOCAL_STACK = new LocalStackContainer(
-            DockerImageName.parse("localstack/localstack:4.0"))
-            .withServices(LocalStackContainer.Service.SQS);
+    private static final FlociContainer FLOCI = new FlociContainer(
+            "floci/floci:2.4.0");
 
     private static SqsClient sqs;
 
     @BeforeAll
     static void setup() {
-        LOCAL_STACK.start();
+        FLOCI.start();
         sqs = SqsClient.builder()
-                .endpointOverride(URI.create(LOCAL_STACK.getEndpoint().toString()))
-                .region(Region.of(LOCAL_STACK.getRegion()))
+                .endpointOverride(URI.create(FLOCI.getEndpoint().toString()))
+                .region(Region.of(FLOCI.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(LOCAL_STACK.getAccessKey(), LOCAL_STACK.getSecretKey())))
+                        AwsBasicCredentials.create(FLOCI.getAccessKey(), FLOCI.getSecretKey())))
                 .build();
     }
 
     @AfterAll
     static void teardown() {
         if (sqs != null) sqs.close();
-        LOCAL_STACK.stop();
+        FLOCI.stop();
     }
 
     @Test

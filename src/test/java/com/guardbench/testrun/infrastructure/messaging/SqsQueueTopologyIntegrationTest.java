@@ -9,8 +9,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.localstack.LocalStackContainer;
-import org.testcontainers.utility.DockerImageName;
+import io.floci.testcontainers.FlociContainer;
 
 import com.guardbench.testrun.application.messaging.TestRunQueue;
 
@@ -24,20 +23,19 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 
 class SqsQueueTopologyIntegrationTest {
 
-    private static final LocalStackContainer LOCAL_STACK = new LocalStackContainer(
-            DockerImageName.parse("localstack/localstack:3.0"))
-            .withServices(LocalStackContainer.Service.SQS);
+    private static final FlociContainer FLOCI = new FlociContainer(
+            "floci/floci:2.4.0");
 
     private static SqsClient sqs;
 
     @BeforeAll
     static void openClient() {
-        LOCAL_STACK.start();
+        FLOCI.start();
         sqs = SqsClient.builder()
-                .endpointOverride(URI.create(LOCAL_STACK.getEndpoint().toString()))
-                .region(Region.of(LOCAL_STACK.getRegion()))
+                .endpointOverride(URI.create(FLOCI.getEndpoint().toString()))
+                .region(Region.of(FLOCI.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(LOCAL_STACK.getAccessKey(), LOCAL_STACK.getSecretKey())))
+                        AwsBasicCredentials.create(FLOCI.getAccessKey(), FLOCI.getSecretKey())))
                 .build();
     }
 
@@ -46,7 +44,7 @@ class SqsQueueTopologyIntegrationTest {
         if (sqs != null) {
             sqs.close();
         }
-        LOCAL_STACK.stop();
+        FLOCI.stop();
     }
 
     @Test

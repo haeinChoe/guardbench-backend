@@ -13,8 +13,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.localstack.LocalStackContainer;
-import org.testcontainers.utility.DockerImageName;
+import io.floci.testcontainers.FlociContainer;
 
 import com.guardbench.testrun.application.messaging.TestRunMessageCodec;
 import com.guardbench.testrun.application.messaging.TestRunQueue;
@@ -45,14 +44,13 @@ import tools.jackson.databind.json.JsonMapper;
  *   <li>SQS가 ApproximateReceiveCount를 증가시키고 maxReceiveCount 도달 후 DLQ로 이동</li>
  * </ol>
  *
- * <p>LocalStack의 SQS redrive는 receive + visibility timeout 만료를 반복하여 동작한다.
+ * <p>Floci의 SQS redrive는 receive + visibility timeout 만료를 반복하여 동작한다.
  * visibility timeout을 0초로 설정하여 테스트 속도를 확보한다.
  */
 class SqsDlqRedriveIntegrationTest {
 
-    private static final LocalStackContainer LOCAL_STACK = new LocalStackContainer(
-            DockerImageName.parse("localstack/localstack:3.0"))
-            .withServices(LocalStackContainer.Service.SQS);
+    private static final FlociContainer FLOCI = new FlociContainer(
+            "floci/floci:2.4.0");
 
     private static SqsClient sqs;
     private static String resolveQueueUrl;
@@ -60,12 +58,12 @@ class SqsDlqRedriveIntegrationTest {
 
     @BeforeAll
     static void setup() {
-        LOCAL_STACK.start();
+        FLOCI.start();
         sqs = SqsClient.builder()
-                .endpointOverride(URI.create(LOCAL_STACK.getEndpoint().toString()))
-                .region(Region.of(LOCAL_STACK.getRegion()))
+                .endpointOverride(URI.create(FLOCI.getEndpoint().toString()))
+                .region(Region.of(FLOCI.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(LOCAL_STACK.getAccessKey(), LOCAL_STACK.getSecretKey())))
+                        AwsBasicCredentials.create(FLOCI.getAccessKey(), FLOCI.getSecretKey())))
                 .build();
 
         // DLQ 생성
@@ -93,7 +91,7 @@ class SqsDlqRedriveIntegrationTest {
         if (sqs != null) {
             sqs.close();
         }
-        LOCAL_STACK.stop();
+        FLOCI.stop();
     }
 
     @Test
