@@ -110,7 +110,7 @@ class TestRunLocalE2eTest {
     }
 
     @DynamicPropertySource
-    static void localStackProperties(DynamicPropertyRegistry registry) {
+    static void flociProperties(DynamicPropertyRegistry registry) {
         registry.add("guardbench.sqs.endpoint-override", () -> FLOCI.getEndpoint().toString());
         registry.add("guardbench.sqs.region", FLOCI::getRegion);
     }
