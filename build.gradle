@@ -74,6 +74,17 @@ tasks.named('spotbugsTest', com.github.spotbugs.snom.SpotBugsTask) {
 	}
 }
 
+// CVE-2026-114938 (Java4Shell): disable the vulnerable HotSpot AVX-512 Base64 intrinsic at runtime
+// and always pull the latest builder/buildpacks so the image picks up patched JRE releases.
+tasks.named('bootBuildImage') {
+	environment.putAll([
+		'BP_JVM_VERSION'             : '21',
+		'BPE_DELIM_JAVA_TOOL_OPTIONS': ' ',
+		'BPE_APPEND_JAVA_TOOL_OPTIONS': '-XX:-UseBASE64Intrinsics',
+	])
+	pullPolicy = org.springframework.boot.buildpack.platform.build.PullPolicy.ALWAYS
+}
+
 tasks.named('test') {
 	useJUnitPlatform()
 }
