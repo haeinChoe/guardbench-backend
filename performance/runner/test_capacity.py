@@ -166,7 +166,7 @@ class ManifestExecutionTest(PerformanceExecutionTest):
                     self.api.create_suite.assert_not_called()
                     self.k6.assert_not_called()
 
-    def test_synthetic_manifest_lookup_error_blocks_seed_and_workload(self):
+    def test_manifest_lookup_error_blocks_seed_and_workload(self):
         self.configure_manifest()
         self.capacity.collect.side_effect = ConfigurationError('expected observable / actual lookup failed')
         with self.assertRaises(ConfigurationError):

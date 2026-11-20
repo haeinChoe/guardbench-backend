@@ -408,7 +408,7 @@ def execute(args: argparse.Namespace) -> int:
 
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description="Run a repeatable GuardBench performance profile.")
-    command.add_argument("--experiment", help="Experiment manifest v1 (currently requires --dry-run).")
+    command.add_argument("--experiment", help="Experiment manifest v1 with expected capacity and Profile/Dataset references.")
     command.add_argument("--profile", help="Workload profile (default: performance/profiles/smoke.yaml).")
     command.add_argument("--dataset", help="Dataset manifest (default: performance/datasets/baseline-v1.yaml).")
     command.add_argument("--result-dir")
