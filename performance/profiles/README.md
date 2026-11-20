@@ -88,7 +88,8 @@ k6 `ramping-vus`의 각 stage는 지정한 duration 동안 이전 target에서 �
 
 단계형 경로의 `gracefulRampDown`과 일반 종료 `gracefulStop`은
 `completion_timeout_seconds + max(1, ceil(polling_interval_seconds))`의 제한된 여유 시간을
-두어 timeout 직전 polling과 `completionFailures`/`iterationsCompleted` 집계가 끊기지 않게 한다.
+두어 timeout 직후 실패 판정과 `completionFailures`/`iterationsCompleted` 집계를 마칠 시간을 준다.
+유예 시간 내 완료를 보장하지 않으며 시간이 만료되면 진행 중 iteration이 강제 중단될 수 있다.
 또한 polling loop는 `startedAt + completion_timeout_seconds`를 마감 시각으로 삼아 대기 시간을
 남은 예산 안으로 제한한다. 하강 구간에서도 진행 중 polling을 기다리므로 실제 종료 시각은 선언한
 stage duration의 합보다 늦을 수 있다. 새 workload의 `test_run_iterations_started`와
