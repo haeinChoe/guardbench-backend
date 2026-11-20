@@ -58,10 +58,11 @@ LOAD/PEAK/STRESS/SOAK의 구체적인 workload 값과 Dataset Size의 `SMALL/MED
 
 즉 `Workload 증가`와 `ECS/SageMaker Capacity 증가`를 같은 실험에서 동시에 바꾸지 않는다. 그래야 병목 원인을 구분할 수 있다.
 
-## 단계형 workload 검토 패키지 (#23)
+## 단계형 workload (#23)
 
-[ADR 0016](../../docs/decisions/0016-performance-experiment-plan.md)의 DRAFT/PROPOSED
-설계에 따른 검토용 확장이며, 실제 운영 preset이나 승인된 목표 수치로 해석하지 않는다.
+[ADR 0016](../../docs/decisions/0016-performance-experiment-plan.md)의 APPROVED/ACCEPTED
+실행 계약에 따른 단계형 부하 지원이다. 아래 fixture의 숫자는 기능 검증용이며 실제 운영
+preset이나 승인된 목표 수치로 해석하지 않는다.
 기존 smoke/launcher의 `ramp_up_seconds` + `duration_seconds` 입력은 계속 지원한다.
 새로운 `stages`는 두 입력과 함께 쓸 수 없다.
 
@@ -99,6 +100,11 @@ polling을 반영한 뒤에만 completed를 증가시킨다(TestRun 성공 여�
 `interrupted = started - completed`를 결과와 report에 남긴다. 기존
 `ramp_up_seconds`/`duration_seconds` 기반 승인 Profile에는 이 새 판정을 강제하지 않으며,
 기존 보관 artifact도 다시 작성하지 않는다.
+
+ADR 0016이 선택한 테스트 유형은 `SMOKE`·`STRESS`·`SOAK`다. 현재 이 변경은 단계형
+실행 기반과 `LOAD` 운영·`STRESS` 검증 fixture를 제공한다. 세 유형별 실제 프로필의
+부하 수치·시간·판정 기준, SOAK 프로필 구현과 기존 유형의 전환 처리는 완료된 것으로
+간주하지 않으며 #23의 후속 구현 범위다.
 
 검증용 곡선은 [`staged-operating.yaml`](../fixtures/profiles/staged-operating.yaml)과
 [`staged-stress.yaml`](../fixtures/profiles/staged-stress.yaml)에 있다. 두 fixture는 동일 schema의
