@@ -1,6 +1,7 @@
 """Issue #212: execute without DB lifecycle inputs while preserving preflight."""
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -69,6 +70,29 @@ class PerformanceExecutionTest(unittest.TestCase):
         self.k6.assert_called_once()
         self.subprocess.assert_not_called()
         self.assertTrue((self.result_dir / "report.md").is_file())
+
+    def test_result_uses_resolved_dataset_and_profile_when_files_change_during_workload(self):
+        fixtures = Path(__file__).resolve().parents[1] / "fixtures"
+        profile_path = self.result_dir.parent / "profile.yaml"
+        dataset_path = self.result_dir.parent / "dataset.yaml"
+        shutil.copyfile(fixtures / "profiles/mock-operating.yaml", profile_path)
+        shutil.copyfile(fixtures / "datasets/mock-two-cases.yaml", dataset_path)
+        self.args.profile = str(profile_path)
+        self.args.dataset = str(dataset_path)
+
+        def mutate_sources(*args):
+            profile_path.write_text("invalid after workload started")
+            dataset_path.write_text("invalid after workload started")
+            args[4].write_text(json.dumps(passing_summary()))
+            return 0
+
+        self.k6.side_effect = mutate_sources
+        self.assertEqual(0, cli.execute(self.args))
+        result = json.loads((self.result_dir / "result.json").read_text())
+        self.assertEqual("fixture-two-cases-v1", result["dataset"]["id"])
+        self.assertEqual(2, result["dataset"]["test_case_count"])
+        self.assertEqual("FIXTURE-OPERATING", result["profile"]["test"]["id"])
+        self.assertEqual(2, len(self.api.create_suite.call_args.args[0]["testCases"]))
 
     def test_active_run_blocks_seed_and_workload(self):
         self.api.list_runs.return_value = [{"id": 9}]
