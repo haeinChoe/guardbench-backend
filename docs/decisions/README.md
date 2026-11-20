@@ -28,7 +28,7 @@
 
 ## 성능 테스트 제안
 
-[ADR 0016](0016-performance-experiment-plan.md)은 인프라 구성 × 시나리오 실행 계획의 DRAFT/PROPOSED 검토안이다. #20–#26 PR 패키지의 제안이며 기존 APPROVED 계약을 대체하지 않는다.
+[ADR 0016](0016-performance-experiment-plan.md)은 인프라 구성 × 시나리오 실행 계획의 DRAFT/PROPOSED 검토안이다. 기존 APPROVED 계약을 대체하지 않는다.
 
 ## 비동기 TestRun 계약 맵
 
