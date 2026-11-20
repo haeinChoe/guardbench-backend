@@ -247,6 +247,8 @@ s3://<PERFORMANCE_RESULTS_BUCKET>/performance/results/<run-id>/
 
 ### 실행 오류 진단 및 부분 결과 보존 (#25)
 
+> 참고 (검토 상태): 이 절의 실패 보존 schema(`failure.json` v1, `performance/failures/` prefix, `result.json` `schema_version: 2`, `upload-complete.json`)는 PR #29 병합 전 사람 리뷰·승인 대상으로 제안된 계약이다. 또한 `experiment.yaml`, `execution-plan.json`, plan metadata 참조는 대기 중인 `#20`(DRAFT ADR 0016)·`#21`·`#24` 통합을 위한 **미승인 선택 확장점**이며, `#20` 승인 전까지 확정된 `dev` 계약으로 간주하지 않는다.
+
 Runner는 성능 기준 미달(`FAIL`)과 실행 도구 오류(`ERROR`)를 구분한다.
 
 - **종료 코드**:
@@ -255,15 +257,15 @@ Runner는 성능 기준 미달(`FAIL`)과 실행 도구 오류(`ERROR`)를 구�
   - `2`: Runner 실행 오류 (`ConfigurationError`, `RunnerError`, `ApiError` 및 예기치 않은 실행 예외)
 - **`result.json` `schema_version: 2` 및 `upload-complete.json` 완료 표식**:
   - 새로 생성하는 `result.json`은 기존 필드를 모두 유지하면서 `schema_version: 2`를 포함한다.
-  - 완료 결과 업로드(`upload_result_directory`)는 6개 핵심 canonical 파일(`profile.yaml`, `dataset.yaml`, `k6-summary.json`, `aws-metrics.json`, `result.json`, `report.md`)이 모두 존재하고 `failure.json`이 없을 때만 `s3://<PERFORMANCE_RESULTS_BUCKET>/performance/results/<run-id>/`에 기존 PutObject/upload 호출만으로 업로드한다(추가 S3 읽기/복사 IAM 권한 불필요). 선택적 실험 파일(`experiment.yaml`, `execution-plan.json`)이 존재하면 함께 업로드한다.
+  - 완료 결과 업로드(`upload_result_directory`)는 6개 핵심 canonical 파일(`profile.yaml`, `dataset.yaml`, `k6-summary.json`, `aws-metrics.json`, `result.json`, `report.md`)이 모두 존재하고 `failure.json`이 없을 때만 `s3://<PERFORMANCE_RESULTS_BUCKET>/performance/results/<run-id>/`에 기존 PutObject/upload 호출만으로 업로드한다(추가 S3 읽기/복사 IAM 권한 불필요). `#20` 확정 전 선택 확장점 파일(`experiment.yaml`, `execution-plan.json`)이 존재하면 함께 업로드한다.
   - 실제 업로드된 파일 목록이 모두 성공한 뒤에만 완료 표식 `upload-complete.json`(`schema_version: 1`, `status: "COMPLETE"`, `run_id`, `completed_at`, `files`, `file_sha256`, optional `result_schema_version`)을 **마지막**으로 게시한다. 중간 업로드가 실패하면 표식은 게시되지 않으며, 측정 이후 `upload` 단계 실패 시 로컬 `result.json`(PASS/FAIL)과 `report.md`는 그대로 보존하고 로컬 `failure.json` (`phase: "upload"`)을 남긴다(실패 prefix 재업로드는 시도하지 않음).
 - **`failure.json` (`schema_version: 1`) 및 조기 설정 오류 보존**:
   - Profile/Dataset 입력 검증을 시작하기 전에 fallback `run_id`와 최소 실행 컨텍스트를 먼저 할당하므로 잘못된 `--profile`/`--dataset` 등 조기 설정 오류도 `failure.json`으로 보존한다(`--dry-run` 검증 실패는 제외).
   - 이미 존재하는 `--result-dir`는 절대 덮어쓰지 않으며, 디렉터리 생성·파일 기록·S3 실패 업로드가 추가로 실패해도 원래 예외를 그대로 전파하고 `stderr`에 원래 오류와 보존 오류를 모두 출력한다(디스크 기록이 가능한 경우에는 `preservation_errors`에도 함께 기록).
-  - 기록 항목은 `schema_version`, `run_id`, `status`(`"ERROR"`), `phase`(`preflight|seed|k6|drain|metrics|report|upload`), `started_at`, `failed_at`, `error`(`type`, `message`, optional `cause`), `inputs`(확인된 non-secret 입력 및 통합 시 `experiment_path`/`experiment_id`/plan 식별 메타데이터), `revisions`(확인된 `application`/`infrastructure`, 미설정/`unknown` 제외), `available_artifacts`, `preservation_errors`다.
+  - 기록 항목은 `schema_version`, `run_id`, `status`(`"ERROR"`), `phase`(`preflight|seed|k6|drain|metrics|report|upload`), `started_at`, `failed_at`, `error`(`type`, `message`, optional `cause`), `inputs`(확인된 non-secret 입력 및 `#20` 확정 전 선택 확장점인 `experiment_path`/`experiment_id`/plan 식별 메타데이터), `revisions`(확인된 `application`/`infrastructure`, 미설정/`unknown` 제외), `available_artifacts`, `preservation_errors`다.
   - 예외 메시지의 URL userinfo, Bearer token, secret/key/password 패턴은 마스킹하며 비밀 환경변수는 저장하지 않는다. 미생성 `k6-summary.json`, `aws-metrics.json`, `result.json`, `report.md`는 임의로 채우지 않는다.
 - **실패 결과 별도 S3 prefix**:
-  - 실패·부분 결과 업로드(`upload_failure_directory`)는 `PERFORMANCE_RESULTS_BUCKET`이 설정된 경우 `failure.json`과 실제로 존재하는 부분 파일(선택적 `experiment.yaml`, `execution-plan.json` 포함)만 아래 별도 prefix에 업로드한다(`upload-complete.json`은 제외).
+  - 실패·부분 결과 업로드(`upload_failure_directory`)는 `PERFORMANCE_RESULTS_BUCKET`이 설정된 경우 `failure.json`과 실제로 존재하는 부분 파일(`#20` 확정 전 선택 확장점인 `experiment.yaml`, `execution-plan.json` 포함)만 아래 별도 prefix에 업로드한다(`upload-complete.json`은 제외).
 
 ```text
 s3://<PERFORMANCE_RESULTS_BUCKET>/performance/failures/<run-id>/
