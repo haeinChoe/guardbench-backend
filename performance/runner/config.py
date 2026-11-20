@@ -92,11 +92,32 @@ def validate_profile(profile: dict[str, Any]) -> None:
     _string(test["type"], "test.type")
     if test.get("type") not in {"SMOKE", "LOAD", "PEAK", "STRESS", "SOAK"}:
         raise ConfigurationError("test.type은 SMOKE, LOAD, PEAK, STRESS, SOAK 중 하나여야 합니다.")
-    _object(workload, "workload", required=("concurrent_test_runs", "ramp_up_seconds", "duration_seconds",
-            "completion_timeout_seconds", "polling_interval_seconds"), optional=("max_iterations_per_vu",))
+    _object(workload, "workload", required=("concurrent_test_runs", "completion_timeout_seconds",
+            "polling_interval_seconds"), optional=("max_iterations_per_vu", "stages",
+            "ramp_up_seconds", "duration_seconds"))
     _integer(workload["concurrent_test_runs"], "workload.concurrent_test_runs", minimum=1)
-    _number(workload["ramp_up_seconds"], "workload.ramp_up_seconds")
-    _number(workload["duration_seconds"], "workload.duration_seconds", minimum=1)
+    if "stages" in workload:
+        if "ramp_up_seconds" in workload or "duration_seconds" in workload:
+            raise ConfigurationError("workload.stages는 ramp_up_seconds/duration_seconds와 혼용할 수 없습니다.")
+        stages = workload["stages"]
+        if not isinstance(stages, list) or not stages:
+            raise ConfigurationError("workload.stages는 비어 있지 않은 배열이어야 합니다.")
+        targets = []
+        for index, stage in enumerate(stages):
+            path = f"workload.stages[{index}]"
+            _object(stage, path, required=("duration_seconds", "concurrent_test_runs"))
+            duration = _number(stage["duration_seconds"], f"{path}.duration_seconds")
+            if duration <= 0:
+                raise ConfigurationError(f"{path}.duration_seconds는 양수여야 합니다.")
+            targets.append(_integer(stage["concurrent_test_runs"], f"{path}.concurrent_test_runs"))
+        if max(targets) != workload["concurrent_test_runs"]:
+            raise ConfigurationError("workload.concurrent_test_runs는 stages의 최대 양수 target과 같아야 합니다.")
+    else:
+        for field in ("ramp_up_seconds", "duration_seconds"):
+            if field not in workload:
+                raise ConfigurationError(f"workload.{field}는 필수입니다.")
+        _number(workload["ramp_up_seconds"], "workload.ramp_up_seconds")
+        _number(workload["duration_seconds"], "workload.duration_seconds", minimum=1)
     _number(workload["completion_timeout_seconds"], "workload.completion_timeout_seconds", minimum=1)
     _number(workload["polling_interval_seconds"], "workload.polling_interval_seconds", minimum=0.1)
     if "max_iterations_per_vu" in workload:

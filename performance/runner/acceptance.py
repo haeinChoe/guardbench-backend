@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -21,7 +22,7 @@ def _metric(summary: dict[str, Any], name: str) -> dict[str, Any]:
 
 def _value(values: dict[str, Any], key: str) -> float | None:
     value = values.get(key)
-    return float(value) if isinstance(value, (int, float)) else None
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def _rate_value(metric: dict[str, Any]) -> float | None:
@@ -36,6 +37,16 @@ def evaluate(profile: dict[str, Any], summary: dict[str, Any],
     api = profile["acceptance"]["api"]
     completion = profile["acceptance"]["completion"]
     checks: list[dict[str, Any]] = []
+
+    started = _value(_metric(summary, "test_run_iterations_started"), "count")
+    completed = _value(_metric(summary, "test_run_iterations_completed"), "count")
+    valid_counts = all(value is not None and math.isfinite(value) and value >= 0
+                       and value.is_integer() for value in (started, completed))
+    interrupted = max(0, started - completed) if valid_counts else None
+    checks.append({"name": "completion.iterations",
+                   "actual": {"started": started, "completed": completed, "interrupted": interrupted},
+                   "expected": "started = completed > 0; no interrupted workload iterations",
+                   "passed": valid_counts and started == completed and started > 0})
 
     latency = _metric(summary, "test_run_create_latency")
     for percentile in ("p(50)", "p(95)", "p(99)"):
