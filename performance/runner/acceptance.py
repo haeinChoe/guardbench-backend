@@ -42,6 +42,9 @@ def evaluate(profile: dict[str, Any], summary: dict[str, Any],
     completed = _value(_metric(summary, "test_run_iterations_completed"), "count")
     valid_counts = all(value is not None and math.isfinite(value) and value >= 0
                        and value.is_integer() for value in (started, completed))
+    if valid_counts:
+        started = int(started)
+        completed = int(completed)
     interrupted = max(0, started - completed) if valid_counts else None
     checks.append({"name": "completion.iterations",
                    "actual": {"started": started, "completed": completed, "interrupted": interrupted},
