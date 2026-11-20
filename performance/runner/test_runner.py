@@ -10,7 +10,12 @@ from performance.runner.config import ConfigurationError, load_profile, load_yam
 from performance.runner.dataset import load_seed_payload
 from performance.runner.aws import InfrastructureCapacityCollector, expected_infrastructure_capacity_from_environment
 from performance.runner.cli import K6_THRESHOLD_FAILURE_EXIT_CODE, RunnerError, run_k6
-from performance.runner.storage import RESULT_FILENAMES, ResultUploadError, upload_result_directory
+from performance.runner.storage import (
+    RESULT_FILENAMES,
+    UPLOAD_COMPLETE_FILENAME,
+    ResultUploadError,
+    upload_result_directory,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -312,10 +317,14 @@ class PerformanceRunnerTest(unittest.TestCase):
 
             upload_result_directory(result_dir, "performance-results", "smoke-123", s3_client=client)
 
-        self.assertEqual(len(RESULT_FILENAMES), len(client.calls))
+        expected_calls = [
+            (filename, "performance-results", f"performance/results/smoke-123/{filename}")
+            for filename in (*RESULT_FILENAMES, UPLOAD_COMPLETE_FILENAME)
+        ]
+        self.assertEqual(expected_calls, client.calls)
         self.assertEqual(
-            ("result.json", "performance-results", "performance/results/smoke-123/result.json"),
-            client.calls[-2],
+            (UPLOAD_COMPLETE_FILENAME, "performance-results", "performance/results/smoke-123/upload-complete.json"),
+            client.calls[-1],
         )
 
     def test_result_upload_rejects_incomplete_runs(self):

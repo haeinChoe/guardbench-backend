@@ -26,7 +26,8 @@ from .aws import (
 )
 from .config import ConfigurationError, load_dataset, load_profile
 from .dataset import load_seed_payload
-from .storage import ResultUploadError, upload_result_directory
+from .failure import RunContext, preserve_failure, sanitize_message
+from .storage import ResultUploadError, upload_failure_directory, upload_result_directory
 
 
 class RunnerError(RuntimeError):
@@ -34,6 +35,7 @@ class RunnerError(RuntimeError):
 
 
 K6_THRESHOLD_FAILURE_EXIT_CODE = 99
+RESULT_SCHEMA_VERSION = 2
 
 
 def _now() -> datetime:
@@ -53,6 +55,11 @@ def _required_revision(name: str) -> str:
     if not value or value.lower() == "unknown":
         raise ConfigurationError(f"실제 성능 실행에는 {name}을(를) 명시해야 합니다.")
     return value
+
+
+def _capture_known_revisions(context: RunContext) -> None:
+    context.record_revision("application", os.environ.get("APP_REVISION", ""))
+    context.record_revision("infrastructure", os.environ.get("INFRA_REVISION", ""))
 
 
 def _queue_state(inspector: QueueInspector, source_urls: list[str], dlq_urls: list[str]) -> dict[str, Any]:
@@ -276,106 +283,153 @@ def _report(result: dict[str, Any]) -> str:
 
 def execute(args: argparse.Namespace) -> int:
     repo_root = _repo_root()
-    profile_path = Path(args.profile).resolve()
-    dataset_path = Path(args.dataset).resolve()
-    profile = load_profile(profile_path)
-    payload, test_case_count = load_seed_payload(dataset_path)
-    run_id = f"{profile['test']['id']}-{_now().strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
-    result_dir = Path(args.result_dir).resolve() if args.result_dir else repo_root / "performance/results" / run_id
-    result_dir.mkdir(parents=True, exist_ok=False)
-    shutil.copyfile(profile_path, result_dir / "profile.yaml")
-    shutil.copyfile(dataset_path, result_dir / "dataset.yaml")
+    run_started_at = _now()
+    fallback_run_id = f"preflight-error-{run_started_at.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+    context = RunContext(run_id=fallback_run_id, started_at=run_started_at, dry_run=bool(args.dry_run))
 
-    if args.dry_run:
-        plan = {"run_id": run_id, "profile": str(profile_path), "dataset": str(dataset_path),
-                "test_case_count": test_case_count, "k6_script": str(repo_root / "performance/k6/test-run.js")}
-        (result_dir / "dry-run.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
-        print(json.dumps(plan, indent=2))
-        return 0
+    try:
+        context.set_phase("preflight")
+        _capture_known_revisions(context)
+        profile_path = Path(args.profile).resolve()
+        dataset_path = Path(args.dataset).resolve()
+        context.record_input("profile_path", str(profile_path))
+        context.record_input("dataset_path", str(dataset_path))
+        context.result_dir = (
+            Path(args.result_dir).resolve() if args.result_dir else repo_root / "performance/results" / context.run_id
+        )
 
-    revisions = {
-        "application": _required_revision("APP_REVISION"),
-        "infrastructure": _required_revision("INFRA_REVISION"),
-    }
-    base_url = os.environ.get("PERF_BASE_URL", "").strip()
-    if not base_url:
-        raise ConfigurationError("실제 성능 실행에는 PERF_BASE_URL이 필요합니다.")
-    api = ApiClient(base_url)
-    source_urls, dlq_urls = queue_urls_from_environment()
-    expected_capacity = expected_infrastructure_capacity_from_environment()
-    inspector = QueueInspector()
-    metric_collector = CloudWatchMetricCollector(repo_root / "performance/metrics/aws.yaml")
-    metric_collector.validate_configuration()
-    preflight = _assert_preflight(api, inspector, source_urls, dlq_urls)
-    infrastructure_capacity = InfrastructureCapacityCollector().collect()
-    preflight["capacity"] = _assert_capacity_preflight(expected_capacity, infrastructure_capacity)
-    infrastructure_capacity["revisions"] = revisions
+        profile = load_profile(profile_path)
+        run_id = f"{profile['test']['id']}-{run_started_at.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+        context.run_id = run_id
+        if not args.result_dir:
+            context.result_dir = repo_root / "performance/results" / run_id
+        context.record_input("profile_id", profile["test"]["id"])
+        context.record_input("profile_type", profile["test"]["type"])
 
-    api.health_check()
-    suite_id = api.create_suite(payload)
-    if suite_id <= 0:
-        raise RunnerError("seed 결과의 TestSuite id가 양수가 아닙니다.")
+        dataset = load_dataset(dataset_path)
+        dataset_id = dataset.get("id", dataset_path.stem)
+        context.record_input("dataset_id", dataset_id)
+        payload, test_case_count = load_seed_payload(dataset_path)
+        context.record_input("test_case_count", test_case_count)
 
-    started_at = _now()
-    summary_path = result_dir / "k6-summary.json"
-    threshold_inputs = _threshold_inputs(profile, run_id, suite_id, base_url)
-    k6_exit_code = run_k6(profile, run_id, suite_id, base_url, summary_path, repo_root)
-    summary = _read_json(summary_path)
-    workload = profile["workload"]
-    drain = _wait_for_drain(api, inspector, source_urls, started_at,
-                            workload["completion_timeout_seconds"], workload["polling_interval_seconds"])
-    finished_at = _now()
-    final_queues = inspector.snapshot(dlq_urls)
-    metrics = metric_collector.collect(started_at, finished_at)
-    (result_dir / "aws-metrics.json").write_text(json.dumps(metrics, indent=2, default=str) + "\n", encoding="utf-8")
-    acceptance = evaluate(
-        profile, summary, drain, final_queues, metrics,
-        k6_exit_code == K6_THRESHOLD_FAILURE_EXIT_CODE,
-    )
-    diagnostics = _collect_run_diagnostics(api, suite_id, started_at, finished_at)
-    threshold_failed = k6_exit_code == K6_THRESHOLD_FAILURE_EXIT_CODE
-    result = {
-        "run_id": run_id,
-        "started_at": _iso(started_at),
-        "finished_at": _iso(finished_at),
-        "revisions": revisions,
-        "infrastructure_capacity": infrastructure_capacity,
-        "experiment": {
-            "work_items_concurrency": infrastructure_capacity["ecs"]["work_items_concurrency"],
-            "concurrent_test_runs": workload["concurrent_test_runs"],
-            "ecs_task_count": infrastructure_capacity["ecs"]["desired_count"],
-        },
-        "dataset": {"id": load_dataset(dataset_path).get("id", dataset_path.stem), "test_case_count": test_case_count,
-                    "suite_id": suite_id},
-        "profile": profile,
-        "k6": {
-            "exit_code": k6_exit_code,
-            "thresholds": "FAIL" if threshold_failed else "PASS",
-            "threshold_inputs": threshold_inputs,
-        },
-        "failure_categories": {
-            "thresholds": "FAIL" if threshold_failed else "PASS",
-            "execution_failures": len(diagnostics["failed_test_run_ids"]),
-        },
-        "test_run_diagnostics": diagnostics,
-        "preflight": preflight,
-        "drain": drain,
-        "final_dlq": final_queues,
-        "aws_metrics": metrics,
-        "acceptance": acceptance,
-    }
-    (result_dir / "result.json").write_text(json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8")
-    (result_dir / "report.md").write_text(_report(result), encoding="utf-8")
-    bucket = os.environ.get("PERFORMANCE_RESULTS_BUCKET")
-    if bucket:
-        try:
-            upload_result_directory(result_dir, bucket, run_id)
-        except ResultUploadError as exc:
-            raise RunnerError("Performance 결과 S3 보존에 실패했습니다. 로컬 결과는 유지됩니다.") from exc
-    else:
-        print("PERFORMANCE_RESULTS_BUCKET이 없어 S3 결과 업로드를 건너뜁니다.", file=sys.stderr)
-    print(f"{acceptance['status']}: {result_dir}")
-    return 0 if acceptance["status"] == "PASS" else 1
+        result_dir = context.result_dir
+        result_dir.mkdir(parents=True, exist_ok=False)
+        context.result_dir_owned = True
+        shutil.copyfile(profile_path, result_dir / "profile.yaml")
+        shutil.copyfile(dataset_path, result_dir / "dataset.yaml")
+
+        if args.dry_run:
+            plan = {"run_id": run_id, "profile": str(profile_path), "dataset": str(dataset_path),
+                    "test_case_count": test_case_count, "k6_script": str(repo_root / "performance/k6/test-run.js")}
+            (result_dir / "dry-run.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+            print(json.dumps(plan, indent=2))
+            return 0
+
+        revisions = {
+            "application": _required_revision("APP_REVISION"),
+            "infrastructure": _required_revision("INFRA_REVISION"),
+        }
+        base_url = os.environ.get("PERF_BASE_URL", "").strip()
+        if not base_url:
+            raise ConfigurationError("실제 성능 실행에는 PERF_BASE_URL이 필요합니다.")
+        api = ApiClient(base_url)
+        source_urls, dlq_urls = queue_urls_from_environment()
+        expected_capacity = expected_infrastructure_capacity_from_environment()
+        inspector = QueueInspector()
+        metric_collector = CloudWatchMetricCollector(repo_root / "performance/metrics/aws.yaml")
+        metric_collector.validate_configuration()
+        preflight = _assert_preflight(api, inspector, source_urls, dlq_urls)
+        infrastructure_capacity = InfrastructureCapacityCollector().collect()
+        preflight["capacity"] = _assert_capacity_preflight(expected_capacity, infrastructure_capacity)
+        infrastructure_capacity["revisions"] = revisions
+
+        context.set_phase("seed")
+        api.health_check()
+        suite_id = api.create_suite(payload)
+        if suite_id <= 0:
+            raise RunnerError("seed 결과의 TestSuite id가 양수가 아닙니다.")
+        context.record_input("suite_id", suite_id)
+
+        context.set_phase("k6")
+        started_at = _now()
+        summary_path = result_dir / "k6-summary.json"
+        threshold_inputs = _threshold_inputs(profile, run_id, suite_id, base_url)
+        k6_exit_code = run_k6(profile, run_id, suite_id, base_url, summary_path, repo_root)
+        summary = _read_json(summary_path)
+
+        context.set_phase("drain")
+        workload = profile["workload"]
+        drain = _wait_for_drain(api, inspector, source_urls, started_at,
+                                workload["completion_timeout_seconds"], workload["polling_interval_seconds"])
+        finished_at = _now()
+        final_queues = inspector.snapshot(dlq_urls)
+
+        context.set_phase("metrics")
+        metrics = metric_collector.collect(started_at, finished_at)
+        (result_dir / "aws-metrics.json").write_text(json.dumps(metrics, indent=2, default=str) + "\n", encoding="utf-8")
+
+        context.set_phase("report")
+        acceptance = evaluate(
+            profile, summary, drain, final_queues, metrics,
+            k6_exit_code == K6_THRESHOLD_FAILURE_EXIT_CODE,
+        )
+        diagnostics = _collect_run_diagnostics(api, suite_id, started_at, finished_at)
+        threshold_failed = k6_exit_code == K6_THRESHOLD_FAILURE_EXIT_CODE
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "run_id": run_id,
+            "started_at": _iso(started_at),
+            "finished_at": _iso(finished_at),
+            "revisions": revisions,
+            "infrastructure_capacity": infrastructure_capacity,
+            "experiment": {
+                "work_items_concurrency": infrastructure_capacity["ecs"]["work_items_concurrency"],
+                "concurrent_test_runs": workload["concurrent_test_runs"],
+                "ecs_task_count": infrastructure_capacity["ecs"]["desired_count"],
+            },
+            "dataset": {"id": dataset_id, "test_case_count": test_case_count,
+                        "suite_id": suite_id},
+            "profile": profile,
+            "k6": {
+                "exit_code": k6_exit_code,
+                "thresholds": "FAIL" if threshold_failed else "PASS",
+                "threshold_inputs": threshold_inputs,
+            },
+            "failure_categories": {
+                "thresholds": "FAIL" if threshold_failed else "PASS",
+                "execution_failures": len(diagnostics["failed_test_run_ids"]),
+            },
+            "test_run_diagnostics": diagnostics,
+            "preflight": preflight,
+            "drain": drain,
+            "final_dlq": final_queues,
+            "aws_metrics": metrics,
+            "acceptance": acceptance,
+        }
+        report_text = _report(result)
+        (result_dir / "result.json").write_text(json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8")
+        (result_dir / "report.md").write_text(report_text, encoding="utf-8")
+
+        context.set_phase("upload")
+        bucket = os.environ.get("PERFORMANCE_RESULTS_BUCKET")
+        if bucket:
+            try:
+                upload_result_directory(result_dir, bucket, run_id)
+            except ResultUploadError as exc:
+                raise RunnerError("Performance 결과 S3 보존에 실패했습니다. 로컬 결과는 유지됩니다.") from exc
+        else:
+            print("PERFORMANCE_RESULTS_BUCKET이 없어 S3 결과 업로드를 건너뜁니다.", file=sys.stderr)
+        print(f"{acceptance['status']}: {result_dir}")
+        return 0 if acceptance["status"] == "PASS" else 1
+    except Exception as exc:
+        if not context.dry_run:
+            preserve_failure(
+                context,
+                exc,
+                bucket=os.environ.get("PERFORMANCE_RESULTS_BUCKET"),
+                upload_failure_fn=upload_failure_directory,
+            )
+        raise
 
 
 def parser() -> argparse.ArgumentParser:
@@ -388,11 +442,14 @@ def parser() -> argparse.ArgumentParser:
     return command
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     try:
-        return execute(parser().parse_args())
+        return execute(parser().parse_args(argv))
     except (ConfigurationError, RunnerError, ApiError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {sanitize_message(str(exc))}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"ERROR: {type(exc).__name__}: {sanitize_message(str(exc))}", file=sys.stderr)
         return 2
 
 
