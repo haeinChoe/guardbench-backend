@@ -33,7 +33,11 @@ def _synthetic_seed_payload(manifest: dict[str, Any]) -> tuple[dict[str, Any], i
 
 
 def load_seed_payload(manifest_path: Path) -> tuple[dict[str, Any], int]:
-    manifest = load_dataset(manifest_path)
+    return seed_payload_from_manifest(load_dataset(manifest_path), manifest_path)
+
+
+def seed_payload_from_manifest(manifest: dict[str, Any], manifest_path: Path) -> tuple[dict[str, Any], int]:
+    """Resolve a validated manifest once; callers retain the resulting payload snapshot."""
     if manifest["source"]["type"] == "synthetic-testset":
         return _synthetic_seed_payload(manifest)
 
@@ -57,6 +61,8 @@ def load_seed_payload(manifest_path: Path) -> tuple[dict[str, Any], int]:
         payload, _ = json.JSONDecoder().raw_decode(source[start + (1 if source[start] == "\n" else 0):])
     except json.JSONDecodeError as exc:
         raise ConfigurationError(f"Dataset source의 JSON payload가 올바르지 않습니다: {source_path}") from exc
+    if not isinstance(payload, dict):
+        raise ConfigurationError("Dataset seed payload는 object여야 합니다.")
     test_cases = payload.get("testCases")
     if not isinstance(test_cases, list):
         raise ConfigurationError("Dataset seed payload에 testCases 배열이 없습니다.")
