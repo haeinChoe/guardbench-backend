@@ -1,14 +1,13 @@
 # 0016. 인프라 구성과 시나리오를 분리한 성능 실험 실행 계획
 
-> Status: DRAFT
+> Status: APPROVED
 > Owner: Backend
-> Last reviewed: 2026-11-20
+> Last reviewed: 2026-11-21
 > Canonical source: GitHub
 > Origin: GitHub Issue #20
-> AI assistance: 검토용 설계 제안이며 사람의 최종 리뷰가 필요하다.
 
-- ADR Status: PROPOSED
-- Decision date: 2026-11-20
+- ADR Status: ACCEPTED
+- Decision date: 2026-11-21
 - Related Issue: #20; 구현·검증 #21–#26
 
 ## Context
@@ -188,7 +187,7 @@ phase=upload를 남긴다. 입력 검증 이전에 최소 run ID·단계를 마�
 
 1. 환경변수·CLI만 확장: 기존 연계는 쉽지만 여러 입력의 조합과 실제 revision을 한 번에 검토·보존하기 어렵다.
 2. workload Profile에 CPU/memory/tier까지 추가: 한 파일은 간단하지만 기존 승인된 소유권을 깨므로 선택하지 않는다.
-3. 단일 manifest + 기존 Profile/Dataset 참조: 새 입력 검증이 필요하지만 소유권과 재현성을 함께 유지하므로 제안한다.
+3. 단일 manifest + 기존 Profile/Dataset 참조: 새 입력 검증이 필요하지만 소유권과 재현성을 함께 유지하므로 채택한다.
 
 ## Consequences
 

@@ -26,9 +26,9 @@
 | Worker 선점, 동시 실행, 잠금/CAS, retry·timeout | [ADR 0005](0005-async-test-run-execution-contract.md), [ADR 0006](0006-independent-domain-contract-boundaries.md) | 결과 저장 경계는 [ADR 0003](0003-result-aggregate-and-write-port-boundaries.md), 최종화 불변식은 [ADR 0004](0004-testrun-finalization-atomicity.md), 물리 스키마는 [ADR 0002](0002-postgresql-persistence-contract.md), claim·Outbox 물리 저장은 [ADR 0008](0008-async-testrun-persistence-contract.md) |
 | SQS 통합 테스트 에뮬레이터, 테스트용 visibility·lease 시간 설정 | [ADR 0015](0015-floci-sqs-test-emulator.md) | retry·timeout 계약 자체를 바꾸면 [ADR 0005](0005-async-test-run-execution-contract.md) |
 
-## 성능 테스트 제안
+## 성능 테스트 실행 계약
 
-[ADR 0016](0016-performance-experiment-plan.md)은 인프라 구성 × 시나리오 실행 계획의 DRAFT/PROPOSED 검토안이다. 기존 APPROVED 계약을 대체하지 않는다.
+[ADR 0016](0016-performance-experiment-plan.md)은 인프라 구성 × 시나리오 실행 계획의 APPROVED/ACCEPTED 계약이다. 인프라 capacity와 Profile의 workload 소유권은 기존 계약을 유지한다.
 
 ## 비동기 TestRun 계약 맵
 
