@@ -1,7 +1,6 @@
-# Synthetic schema fixture only. These are not an AWS small preset or operating targets.
+# Input validation fixture; resource values are examples for tests.
 schema_version: 1
 id: fixture-small-operating
-mode: synthetic
 infrastructure:
   id: fixture-small
   revision: fixture-v1
