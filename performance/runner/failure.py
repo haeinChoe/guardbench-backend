@@ -68,7 +68,6 @@ class RunContext:
         experiment_id: str | None = None,
         infrastructure_id: str | None = None,
         infrastructure_revision: str | None = None,
-        mode: str | None = None,
     ) -> None:
         if experiment_path is not None:
             raw_path = str(experiment_path).strip()
@@ -77,7 +76,6 @@ class RunContext:
         self.record_input("experiment_id", experiment_id)
         self.record_input("infrastructure_id", infrastructure_id)
         self.record_input("infrastructure_revision", infrastructure_revision)
-        self.record_input("experiment_mode", mode)
 
     def record_execution_plan(self, plan: Mapping[str, Any]) -> None:
         experiment = plan.get("experiment")
@@ -94,7 +92,6 @@ class RunContext:
             experiment_id=experiment_dict.get("id"),
             infrastructure_id=infrastructure_dict.get("id"),
             infrastructure_revision=infrastructure_dict.get("revision"),
-            mode=experiment_dict.get("mode"),
         )
 
         profile = plan.get("profile")
