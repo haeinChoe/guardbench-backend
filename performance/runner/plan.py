@@ -32,13 +32,11 @@ def _capacity_units(value: Any, path: str) -> str:
 
 
 def validate_experiment(manifest: dict[str, Any]) -> None:
-    _object(manifest, "experiment", required=("schema_version", "id", "mode", "infrastructure", "profile", "dataset"))
+    _object(manifest, "experiment", required=("schema_version", "id", "infrastructure", "profile", "dataset"))
     if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
         raise ConfigurationError("experiment.schema_version은 1이어야 합니다.")
-    for field in ("id", "mode", "profile", "dataset"):
+    for field in ("id", "profile", "dataset"):
         _string(manifest[field], f"experiment.{field}")
-    if manifest["mode"] not in {"synthetic", "aws"}:
-        raise ConfigurationError("experiment.mode는 synthetic 또는 aws여야 합니다.")
     infrastructure = _object(manifest["infrastructure"], "infrastructure", required=("id", "revision", "expected"))
     for field in ("id", "revision"):
         _string(infrastructure[field], f"infrastructure.{field}")
@@ -124,7 +122,7 @@ def load_execution_plan(path: Path) -> ExecutionPlan:
                ("dataset", str(dataset_path), dataset_bytes))
     plan = {
         "schema_version": 1,
-        "experiment": {"id": manifest["id"], "mode": manifest["mode"]},
+        "experiment": {"id": manifest["id"]},
         "infrastructure": manifest["infrastructure"],
         "profile": profile,
         "dataset": {"id": dataset["id"], "test_case_count": count},

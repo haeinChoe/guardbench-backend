@@ -41,7 +41,7 @@ class ExecutionPlanTest(unittest.TestCase):
             resolved = load_execution_plan(self.manifest_path)
         plan = resolved.to_dict()
         self.assertEqual({"schema_version", "experiment", "infrastructure", "profile", "dataset", "sources"}, set(plan))
-        self.assertEqual({"id": "fixture-small-operating", "mode": "synthetic"}, plan["experiment"])
+        self.assertEqual({"id": "fixture-small-operating"}, plan["experiment"])
         self.assertEqual("fixture-v1", plan["infrastructure"]["revision"])
         self.assertEqual(self.profile, plan["profile"])
         self.assertEqual({"id": "fixture-two-cases-v1", "test_case_count": 2}, plan["dataset"])
@@ -73,10 +73,8 @@ class ExecutionPlanTest(unittest.TestCase):
         worker = expected["ecs"]["worker"]
         worker.update(task_cpu=256, task_memory="00512")
         expected["ecs"]["api"] = {key: value for key, value in worker.items() if key != "work_items_concurrency"}
-        self.manifest["mode"] = "aws"
         self.write_manifest()
         plan = load_execution_plan(self.manifest_path).to_dict()
-        self.assertEqual("aws", plan["experiment"]["mode"])
         for role in ("api", "worker"):
             self.assertEqual("256", plan["infrastructure"]["expected"]["ecs"][role]["task_cpu"])
             self.assertEqual("512", plan["infrastructure"]["expected"]["ecs"][role]["task_memory"])
@@ -84,7 +82,7 @@ class ExecutionPlanTest(unittest.TestCase):
     def test_missing_unknown_and_wrong_nested_manifest_values_are_rejected(self):
         mutations = [
             (("schema_version",), None), (("schema_version",), True), (("schema_version",), 2),
-            (("id",), ""), (("id",), []), (("mode",), "unknown"), (("mode",), []),
+            (("id",), ""), (("id",), []), (("mode",), "synthetic"), (("mode",), "aws"),
             (("profile",), ""), (("infrastructure",), []),
             (("infrastructure", "revision"), ""),
             (("infrastructure", "expected", "ecs"), []),

@@ -1,9 +1,9 @@
-# Synthetic experiment input fixtures
+# Experiment input validation fixtures
 
 These files validate the Runner's proposed experiment manifest v1 interface
 ([ADR 0016](../../docs/decisions/0016-performance-experiment-plan.md), DRAFT).
 Resource names, CPU/memory, counts, workload and acceptance values are mock inputs.
-They do not define an AWS small preset, operating goals, or a performance Baseline.
+They do not define an AWS small preset or operating goals.
 
 Run from the repository root with Python dependencies from
 `performance/requirements.txt` installed:
@@ -20,7 +20,6 @@ DB or k6 are needed. The command validates and prints the plan, writes
 `execution-plan.json` and `dry-run.json`, and preserves original `experiment.yaml`,
 `profile.yaml` and `dataset.yaml` files. It makes no external calls.
 At this stage `--experiment` requires `--dry-run`; actual execution follows in #22.
-`mode: synthetic` records provenance and does not bypass real execution preflight.
 
 A manifest selects one infrastructure ID/revision, expected capacity, Profile and
 Dataset. Worker ECS, RDS and SageMaker expectations are required; API ECS is
@@ -37,7 +36,7 @@ verification. Environment expansion happens before validation. Missing target
 URL/model values, unresolved required input, nonfinite numbers and credential-bearing
 target URLs are rejected.
 
-`execution-plan.json` contains `schema_version: 1`, `experiment: {id, mode}`,
+`execution-plan.json` contains `schema_version: 1`, `experiment: {id}`,
 `infrastructure: {id, revision, expected}`, the full resolved Profile,
 `dataset: {id, test_case_count}` and `sources`. Each of the experiment/Profile/Dataset
 sources includes its absolute path and SHA-256 of the original file bytes, before
