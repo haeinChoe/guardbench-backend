@@ -4,7 +4,7 @@
 > Owner: Backend
 > Last reviewed: 2026-11-20
 > Canonical source: GitHub
-> Origin: GitHub Issue #20 및 사용자의 전체 이슈 구현·PR 작성 위임
+> Origin: GitHub Issue #20
 > AI assistance: 검토용 설계 제안이며 사람의 최종 리뷰가 필요하다.
 
 - ADR Status: PROPOSED
@@ -13,12 +13,13 @@
 
 ## Context
 
-사용자는 인프라 구성 수준(small 등)을 선택한 뒤 그 인프라를 고정하고 운영·스트레스
-시나리오를 실행하려 한다. small은 사용자 수, Dataset 크기 또는 Runner 머신 크기가
-아니다. 현재 AWS 인프라는 없으며 Backend를 로컬 검증부터 완성하고 IaC는 뒤에 연결한다.
-사용자가 모든 이슈를 의존순서대로 구현하여 PR로 제출하도록 위임했으므로 이 문서는
-후속 구현과 함께 검토할 제안을 구체화한다. APPROVED/ACCEPTED로 승격하지 않으며,
-최종 결정은 문서·구현 PR 리뷰에서 확인한다. 기존 승인 계약의 capacity/workload 소유권은 유지한다.
+성능 실험은 하나의 인프라 구성을 고정하고 선택한 부하 시나리오를 실행한다.
+small 등의 구성 이름은 측정 대상 서비스의 자원 규모를 가리킨다. 인프라 구성과
+부하 시나리오를 분리해야 동일한 용량에서 운영·스트레스 패턴을 비교할 수 있다.
+
+현재 실행 조건은 Profile, Dataset과 여러 환경변수에 분산되어 있다. 이 조합을
+실행 전에 검증하고 결과까지 보존할 단일 입력이 필요하다. 인프라 capacity는
+IaC/배포 설정이, workload와 acceptance는 Profile이 소유하는 기존 경계를 유지한다.
 
 현재 Profile은 workload/acceptance/target을 소유한다. `--profile`, `--dataset` 호출은
 `bin/run-performance`, `bin/verify-runtime`, Docker ENTRYPOINT와 기존 실행 테스트에서 사용한다.
@@ -33,12 +34,9 @@
 - **시나리오**: 고정 인프라에 가할 workload와 실행 전에 정한 acceptance. 기존 Profile이 소유한다.
 - **실행 manifest**: 인프라 구성 식별/예상값과 Profile/Dataset 파일을 연결하는 단일 실험 입력.
 - **실행 계획**: manifest와 참조 파일을 검증·해석하여 보존하는 설정 snapshot. 실행 ID와 구분한다.
-- **synthetic 실행**: 검증 fixture와 대역을 사용하는 기능 검증. 실제 AWS 성능 Baseline이 아니다.
 
 한 manifest는 한 실험만 가리킨다. matrix/병렬 실험, DB reset/TRUNCATE, queue purge,
-AWS resource 생성/삭제, CodeBuild/Fargate 선택은 포함하지 않는다. synthetic 표시는
-provenance일 뿐 production preflight나 AWS 호출을 우회하는 기능이 아니다.
-대역 설치는 로컬 검증 harness가 소유한다.
+AWS resource 생성/삭제, CodeBuild/Fargate 선택은 포함하지 않는다.
 
 ### 실행 manifest v1
 
@@ -50,7 +48,6 @@ provenance일 뿐 production preflight나 AWS 호출을 우회하는 기능이 �
 ```yaml
 schema_version: 1
 id: fixture-small-operating
-mode: synthetic  # synthetic 또는 aws; 자원 연결 방식이나 preflight를 바꾸지 않는다.
 infrastructure:
   id: fixture-small
   revision: fixture-v1
@@ -82,7 +79,7 @@ dataset: ../datasets/local.yaml
 ```
 
 예시의 값은 검증 fixture이며 실제 small preset이나 운영 목표가 아니다. 필수 항목은
-schema_version=1, 비어 있지 않은 id/revision, 지원되는 mode, profile/dataset 참조,
+schema_version=1, 비어 있지 않은 id/revision, profile/dataset 참조,
 infrastructure.expected.ecs.worker의 위 여섯 필드와 expected.rds/sagemaker다. 기존 측정 계약이
 RDS·SageMaker 관측을 요구하므로 이 자원 입력도 필수로 받는다. expected.ecs.api는
 선택 항목이며 지정하면 예시의 해당 필드를 모두 요구한다. 알려지지 않은 구조/키와
@@ -90,7 +87,7 @@ RDS·SageMaker 관측을 요구하므로 이 자원 입력도 필수로 받는�
 또는 그 문자열을 받아 계획에서는 십진 문자열로 정규화한다. 실험 중 자원 개수를
 0으로 내리는 시나리오는 이 schema에 포함하지 않는다.
 
-실행 계획 JSON은 `schema_version`, `experiment: {id, mode}`, `infrastructure`,
+실행 계획 JSON은 `schema_version`, `experiment: {id}`, `infrastructure`,
 검증된 `profile`, `dataset: {id, test_case_count}`, `sources`를 가진다.
 `sources`에는 experiment/profile/dataset 각각의 절대 path와 원본 byte의 SHA-256을 남긴다.
 파일명만 같은 수정된 입력과 revision이 다른 구성을 구분한다. 검증한 입력과 해석한
@@ -114,7 +111,7 @@ source/DLQ queue URL·QueueName과 API base URL 등 실행 연결 입력은 기�
 계속 사용한다. 이런 연결 입력을 capacity preset이나 가짜 metric으로 추정하지 않는다.
 
 manifest 없이 실행하는 기존 경로의 단일 `ecs` snapshot과 환경변수 입력은 현재 소비처를
-위해 유지한다. 실제 AWS 조회·seed·workload를 건너뛰는 mock CLI flag는 만들지 않는다.
+위해 유지한다.
 설정 불일치·조회 실패·미완료 rollout은 seed/k6 전에 명확한 expected/actual 차이로 중단한다.
 
 ### Workload와 튜플
@@ -152,10 +149,8 @@ gracefulRampDown은 completion timeout으로 두어 하강 단계에서도 진�
 완료 결과의 `started_at`, `finished_at`, `revisions`, `profile`, `dataset`, `acceptance`와
 파일명은 실제 분석 소비처를 위해 유지한다. 기존 `result.experiment`는 (W,C,T)
 객체로 유지하고 manifest 식별 정보는 `result.execution_plan.experiment` 아래에 둔다. 결과에 schema_version=2와 해석된 실행 계획,
-인프라 구성 ID/revision, 시나리오 ID/type, provenance를 추가한다. `measurement_kind`는
-`synthetic`/`aws`, `baseline_eligible`는 유효한 실제 AWS 측정에서만 참이다. synthetic의
-기능 검증 PASS가 실제 성능 Baseline을 뜻하지 않는다. metric이 수집되지 않은 경우를
-실제 정상 metric으로 채우지 않는다.
+인프라 구성 ID/revision, 시나리오 ID/type과 입력 출처를 추가한다. metric이 수집되지
+않은 경우를 실제 정상 metric으로 채우지 않는다.
 
 오류는 완료 결과로 위장하지 않고 별도 `failure.json`에 기록한다. 최소한
 schema_version=1, run_id, status=ERROR, phase, error(type/message), available_artifacts,
@@ -176,18 +171,16 @@ phase=upload를 남긴다. 입력 검증 이전에 최소 run ID·단계를 마�
 
 ## Consequences
 
-인프라 없이 fixture·stub으로 계획/차단/보고를 먼저 검증할 수 있다. 실제 capacity 값·실환경
-검증과 실행 엔진은 후속이다. 기존 CLI·완료 결과 소비처는 조사한 범위에서 유지하며,
-새 schema를 제거하는 되돌리기는 optional `--experiment` 경로와 추가 metadata 범위에 한정한다.
-DB 또는 운영 데이터 migration은 없다. PR은 #20→#21→#22/#23→#24→#26, 독립 오류 보존 #25로
-나누며 최종 통합은 병합 전 리뷰 가능한 별도 base에서 검증한다.
+단일 manifest로 입력 조합과 revision을 검토하고 재현할 수 있다. 반면 manifest와
+참조 파일 사이의 검증·snapshot 보존이 추가로 필요하다. 기존 CLI·완료 결과 소비처는
+조사한 범위에서 유지하며 새 경로를 되돌리는 범위는 optional `--experiment`와 추가
+metadata에 한정된다. DB migration이나 인프라 자원 변경은 없다.
 
 ## Validation
 
 - manifest schema/참조/finite 수치/중복 입력을 검증하고 dry-run에서 외부 호출이 없음을 검사한다.
 - API/Worker/SageMaker/RDS 차이와 미완료 상태에서 seed/workload가 차단되는지 검사한다.
 - 운영/스트레스의 선언된 k6 stages와 tuple 의미를 검사한다.
-- 결과 provenance와 strict complete/partial artifact 처리를 검사한다.
-- 실제 Runner와 실제 k6는 로컬 모의 HTTP API와 AWS/queue/metric 대역을 연결해 실행한다.
-  mock k6 기반 테스트와 이 검증을 구분한다. 정상·불일치·중간 오류와 프로세스 정리를 확인한다.
-- 실제 AWS 성능, quota, 비용, 권한, VPC, SageMaker 생성/정리는 이 검증의 범위가 아니다.
+- 결과의 입력 출처와 strict complete/partial artifact 처리를 검사한다.
+- Runner와 k6 연결, 정상·불일치·중간 오류, 프로세스 정리를 검증한다.
+  테스트 대역을 사용하는 검증과 실환경 통합 검증의 결과를 구분한다.
