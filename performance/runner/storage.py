@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 from datetime import datetime, timezone
@@ -25,7 +26,11 @@ RESULT_FILENAMES = (
     "result.json",
     "report.md",
 )
-PARTIAL_ARTIFACT_FILENAMES = (FAILURE_FILENAME, *RESULT_FILENAMES)
+OPTIONAL_RESULT_FILENAMES = (
+    "experiment.yaml",
+    "execution-plan.json",
+)
+PARTIAL_ARTIFACT_FILENAMES = (FAILURE_FILENAME, *RESULT_FILENAMES, *OPTIONAL_RESULT_FILENAMES)
 
 
 class ResultUploadError(RuntimeError):
@@ -56,6 +61,14 @@ def _read_result_schema_version(result_dir: Path) -> int | None:
     return None
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def upload_result_directory(result_dir: Path, bucket: str, run_id: str, *, s3_client=None) -> None:
     if not bucket.strip():
         raise ResultUploadError("PERFORMANCE_RESULTS_BUCKET이 비어 있습니다.")
@@ -66,17 +79,25 @@ def upload_result_directory(result_dir: Path, bucket: str, run_id: str, *, s3_cl
     missing = [name for name in RESULT_FILENAMES if not (result_dir / name).is_file()]
     if missing:
         raise ResultUploadError(f"업로드할 완료 결과 파일이 없습니다: {', '.join(missing)}")
+    files_to_upload = [
+        *RESULT_FILENAMES,
+        *(name for name in OPTIONAL_RESULT_FILENAMES if (result_dir / name).is_file()),
+    ]
+    file_hashes: dict[str, str] = {}
     try:
         client = s3_client or boto3.client("s3")
-        for filename in RESULT_FILENAMES:
-            client.upload_file(str(result_dir / filename), bucket, result_key(run_id, filename))
+        for filename in files_to_upload:
+            local_path = result_dir / filename
+            client.upload_file(str(local_path), bucket, result_key(run_id, filename))
+            file_hashes[filename] = _sha256_file(local_path)
 
         marker: dict[str, object] = {
             "schema_version": UPLOAD_COMPLETE_SCHEMA_VERSION,
             "run_id": run_id,
             "status": "COMPLETE",
             "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "files": list(RESULT_FILENAMES),
+            "files": list(files_to_upload),
+            "file_sha256": file_hashes,
         }
         result_schema_version = _read_result_schema_version(result_dir)
         if result_schema_version is not None:

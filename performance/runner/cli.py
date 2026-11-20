@@ -290,6 +290,9 @@ def execute(args: argparse.Namespace) -> int:
     try:
         context.set_phase("preflight")
         _capture_known_revisions(context)
+        experiment_arg = getattr(args, "experiment", None)
+        if experiment_arg:
+            context.record_experiment(experiment_path=experiment_arg)
         profile_path = Path(args.profile).resolve()
         dataset_path = Path(args.dataset).resolve()
         context.record_input("profile_path", str(profile_path))

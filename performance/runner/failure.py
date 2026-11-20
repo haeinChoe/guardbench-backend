@@ -6,7 +6,7 @@ import json
 import re
 import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,6 +60,53 @@ class RunContext:
         cleaned = value.strip()
         if cleaned and cleaned.lower() != "unknown":
             self.revisions[key] = cleaned
+
+    def record_experiment(
+        self,
+        *,
+        experiment_path: Path | str | None = None,
+        experiment_id: str | None = None,
+        infrastructure_id: str | None = None,
+        infrastructure_revision: str | None = None,
+        mode: str | None = None,
+    ) -> None:
+        if experiment_path is not None:
+            raw_path = str(experiment_path).strip()
+            if raw_path:
+                self.record_input("experiment_path", str(Path(raw_path).resolve()))
+        self.record_input("experiment_id", experiment_id)
+        self.record_input("infrastructure_id", infrastructure_id)
+        self.record_input("infrastructure_revision", infrastructure_revision)
+        self.record_input("experiment_mode", mode)
+
+    def record_execution_plan(self, plan: Mapping[str, Any]) -> None:
+        experiment = plan.get("experiment")
+        experiment_dict = experiment if isinstance(experiment, Mapping) else {}
+        infrastructure = plan.get("infrastructure")
+        infrastructure_dict = infrastructure if isinstance(infrastructure, Mapping) else {}
+        sources = plan.get("sources")
+        sources_dict = sources if isinstance(sources, Mapping) else {}
+        exp_source = sources_dict.get("experiment")
+        exp_source_dict = exp_source if isinstance(exp_source, Mapping) else {}
+
+        self.record_experiment(
+            experiment_path=exp_source_dict.get("path"),
+            experiment_id=experiment_dict.get("id"),
+            infrastructure_id=infrastructure_dict.get("id"),
+            infrastructure_revision=infrastructure_dict.get("revision"),
+            mode=experiment_dict.get("mode"),
+        )
+
+        profile = plan.get("profile")
+        if isinstance(profile, Mapping):
+            test = profile.get("test")
+            if isinstance(test, Mapping):
+                self.record_input("profile_id", test.get("id"))
+                self.record_input("profile_type", test.get("type"))
+        dataset = plan.get("dataset")
+        if isinstance(dataset, Mapping):
+            self.record_input("dataset_id", dataset.get("id"))
+            self.record_input("test_case_count", dataset.get("test_case_count"))
 
 
 def sanitize_message(message: str) -> str:
@@ -115,7 +162,11 @@ def build_failure_payload(
 def _copy_raw_inputs(context: RunContext, record_error: Callable[[str, BaseException], None]) -> None:
     if context.result_dir is None or not context.result_dir_owned:
         return
-    for input_key, target_name in (("profile_path", "profile.yaml"), ("dataset_path", "dataset.yaml")):
+    for input_key, target_name in (
+        ("experiment_path", "experiment.yaml"),
+        ("profile_path", "profile.yaml"),
+        ("dataset_path", "dataset.yaml"),
+    ):
         raw_path = context.inputs.get(input_key)
         if not isinstance(raw_path, str):
             continue
@@ -126,6 +177,36 @@ def _copy_raw_inputs(context: RunContext, record_error: Callable[[str, BaseExcep
                 shutil.copyfile(source_path, dest_path)
         except OSError as exc:
             record_error("copy_input_artifact", exc)
+
+
+def _backfill_experiment_metadata_from_plan(context: RunContext) -> None:
+    if context.result_dir is None or not context.result_dir_owned:
+        return
+    plan_path = context.result_dir / "execution-plan.json"
+    if not plan_path.is_file():
+        return
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(plan, dict):
+        return
+
+    experiment = plan.get("experiment") if isinstance(plan.get("experiment"), dict) else {}
+    infrastructure = plan.get("infrastructure") if isinstance(plan.get("infrastructure"), dict) else {}
+    sources = plan.get("sources") if isinstance(plan.get("sources"), dict) else {}
+    exp_source = sources.get("experiment") if isinstance(sources.get("experiment"), dict) else {}
+
+    candidates = {
+        "experiment_path": exp_source.get("path"),
+        "experiment_id": experiment.get("id"),
+        "experiment_mode": experiment.get("mode"),
+        "infrastructure_id": infrastructure.get("id"),
+        "infrastructure_revision": infrastructure.get("revision"),
+    }
+    for key, value in candidates.items():
+        if key not in context.inputs:
+            context.record_input(key, value)
 
 
 def preserve_failure(
@@ -162,6 +243,7 @@ def preserve_failure(
                 _copy_raw_inputs(context, record_preservation_error)
 
         if context.result_dir is not None and context.result_dir_owned:
+            _backfill_experiment_metadata_from_plan(context)
             candidate_path = context.result_dir / FAILURE_FILENAME
             try:
                 available = discover_available_artifacts(context.result_dir, include_failure_file=True)
