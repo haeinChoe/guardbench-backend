@@ -232,6 +232,10 @@ def _report(result: dict[str, Any]) -> str:
     capacity = result["infrastructure_capacity"]
     decision = result.get("acceptance", {}).get("status", "FAIL")
     diagnostics = result.get("test_run_diagnostics", {})
+    iteration_check = next(
+        (check for check in result["acceptance"]["checks"] if check["name"] == "completion.iterations"),
+        None,
+    )
     if "stages" in workload:
         curve = ", ".join(f"{stage['duration_seconds']}s → {stage['concurrent_test_runs']} VUs"
                           for stage in workload["stages"])
@@ -265,7 +269,7 @@ def _report(result: dict[str, Any]) -> str:
         f"- Execution error summary: {diagnostics.get('error_summary', {})}",
         f"- Queue drain: {result['drain']}",
         f"- AWS metrics: `aws-metrics.json` ({result['aws_metrics'].get('status')})",
-        f"- Iteration validity: {next((check for check in result['acceptance']['checks'] if check['name'] == 'completion.iterations'), {})}",
+        *([f"- Iteration validity: {iteration_check}"] if iteration_check is not None else []),
         f"- Decision: **{decision}**",
         "",
         "## Infrastructure Capacity Snapshot",

@@ -18,7 +18,7 @@ from performance.runner.acceptance import evaluate
 from performance.runner.cli import _k6_environment, run_k6
 from performance.runner.config import ConfigurationError, load_profile, validate_profile
 from performance.runner.plan import load_execution_plan
-from performance.runner.test_runner import passing_summary
+from performance.runner.test_runner import acceptance_profile, k6_profile, passing_summary
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +27,13 @@ K6 = shutil.which(os.environ.get("K6_BIN", "k6"))
 
 def staged_profile(name="staged-operating"):
     return load_profile(ROOT / f"fixtures/profiles/{name}.yaml")
+
+
+def staged_passing_summary():
+    summary = copy.deepcopy(passing_summary())
+    summary["metrics"]["test_run_iterations_started"] = {"values": {"count": 1}}
+    summary["metrics"]["test_run_iterations_completed"] = {"values": {"count": 1}}
+    return summary
 
 
 def iteration_check(summary):
@@ -91,18 +98,18 @@ class WorkloadStagesTest(unittest.TestCase):
         for started, completed in ((2, 1), (None, 1), (1, None), (0, 0), (1, 2), (-1, -1),
                                    (float("nan"), 1), (1, float("inf")), (1.5, 1.5), (True, True)):
             with self.subTest(started=started, completed=completed):
-                summary = passing_summary()
+                summary = staged_passing_summary()
                 summary["metrics"]["test_run_iterations_started"] = {"count": started}
                 summary["metrics"]["test_run_iterations_completed"] = {"count": completed}
                 result, check = iteration_check(summary)
                 self.assertFalse(check["passed"])
                 self.assertEqual("FAIL", result["status"])
-        summary = passing_summary()
+        summary = staged_passing_summary()
         summary["metrics"]["test_run_iterations_started"] = {"count": 2}
         result, check = iteration_check(summary)
         self.assertEqual(1, check["actual"]["interrupted"])
 
-        summary_int = passing_summary()
+        summary_int = staged_passing_summary()
         summary_int["metrics"]["test_run_iterations_started"] = {"count": 2}
         summary_int["metrics"]["test_run_iterations_completed"] = {"count": 1}
         _, check_int = iteration_check(summary_int)
@@ -113,12 +120,22 @@ class WorkloadStagesTest(unittest.TestCase):
 
     def test_complete_iterations_pass_for_current_and_nested_summary_shapes(self):
         for nested in (True, False):
-            summary = passing_summary()
+            summary = staged_passing_summary()
             for name in ("test_run_iterations_started", "test_run_iterations_completed"):
                 summary["metrics"][name] = {"values": {"count": 2}} if nested else {"count": 2}
             result, check = iteration_check(summary)
             self.assertTrue(check["passed"])
             self.assertEqual("PASS", result["status"])
+
+    def test_legacy_profile_skips_completion_iterations_check(self):
+        metrics = {"status": "COLLECTED", "metrics": [
+            {"id": prefix, "values": [1]} for prefix in ("ecs_", "sqs_", "rds_", "sagemaker_")
+        ]}
+        for label, profile in (("acceptance_only", acceptance_profile()), ("ramp_up_duration", k6_profile())):
+            with self.subTest(label=label):
+                result = evaluate(profile, passing_summary(), {"passed": True, "duration_seconds": 0}, [], metrics)
+                self.assertEqual("PASS", result["status"])
+                self.assertNotIn("completion.iterations", [check["name"] for check in result["checks"]])
 
     def test_fixed_infrastructure_manifest_supports_operating_and_stress_stage_profiles(self):
         base_manifest = yaml.safe_load(
@@ -163,7 +180,7 @@ class WorkloadStagesTest(unittest.TestCase):
         metrics = {"status": "COLLECTED", "metrics": [
             {"id": prefix, "values": [1]} for prefix in ("ecs_", "sqs_", "rds_", "sagemaker_")
         ]}
-        summary = passing_summary()
+        summary = staged_passing_summary()
         failed_by_k6 = evaluate(
             profile, summary, {"passed": True, "duration_seconds": 0}, [], metrics,
             k6_threshold_failed=True,

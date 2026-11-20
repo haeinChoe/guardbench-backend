@@ -38,18 +38,20 @@ def evaluate(profile: dict[str, Any], summary: dict[str, Any],
     completion = profile["acceptance"]["completion"]
     checks: list[dict[str, Any]] = []
 
-    started = _value(_metric(summary, "test_run_iterations_started"), "count")
-    completed = _value(_metric(summary, "test_run_iterations_completed"), "count")
-    valid_counts = all(value is not None and math.isfinite(value) and value >= 0
-                       and value.is_integer() for value in (started, completed))
-    if valid_counts:
-        started = int(started)
-        completed = int(completed)
-    interrupted = max(0, started - completed) if valid_counts else None
-    checks.append({"name": "completion.iterations",
-                   "actual": {"started": started, "completed": completed, "interrupted": interrupted},
-                   "expected": "started = completed > 0; no interrupted workload iterations",
-                   "passed": valid_counts and started == completed and started > 0})
+    workload = profile.get("workload")
+    if isinstance(workload, dict) and "stages" in workload:
+        started = _value(_metric(summary, "test_run_iterations_started"), "count")
+        completed = _value(_metric(summary, "test_run_iterations_completed"), "count")
+        valid_counts = all(value is not None and math.isfinite(value) and value >= 0
+                           and value.is_integer() for value in (started, completed))
+        if valid_counts:
+            started = int(started)
+            completed = int(completed)
+        interrupted = max(0, started - completed) if valid_counts else None
+        checks.append({"name": "completion.iterations",
+                       "actual": {"started": started, "completed": completed, "interrupted": interrupted},
+                       "expected": "started = completed > 0; no interrupted workload iterations",
+                       "passed": valid_counts and started == completed and started > 0})
 
     latency = _metric(summary, "test_run_create_latency")
     for percentile in ("p(50)", "p(95)", "p(99)"):

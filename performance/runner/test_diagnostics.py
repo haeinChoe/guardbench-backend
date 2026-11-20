@@ -58,8 +58,6 @@ class PerformanceDiagnosticsTest(unittest.TestCase):
     def test_acceptance_reads_k6_055_summary_export_shape(self):
         summary = {
             "metrics": {
-                "test_run_iterations_started": {"count": 1},
-                "test_run_iterations_completed": {"count": 1},
                 "test_run_create_latency": {
                     "avg": 1979.597112,
                     "med": 1979.597112,
@@ -91,8 +89,6 @@ class PerformanceDiagnosticsTest(unittest.TestCase):
     def test_acceptance_reads_rate_value_from_real_smoke_shape(self):
         summary = {
             "metrics": {
-                "test_run_iterations_started": {"count": 1},
-                "test_run_iterations_completed": {"count": 1},
                 "test_run_create_latency": {
                     "p(50)": 365.577834,
                     "p(95)": 365.577834,
@@ -130,8 +126,6 @@ class PerformanceDiagnosticsTest(unittest.TestCase):
     def test_acceptance_keeps_nested_values_fixture_compatibility(self):
         summary = {
             "metrics": {
-                "test_run_iterations_started": {"count": 1},
-                "test_run_iterations_completed": {"count": 1},
                 "test_run_create_latency": {"values": {"p(50)": 1, "p(95)": 1, "p(99)": 1}},
                 "test_run_create_errors": {"values": {"rate": 0}},
                 "test_run_completion_failures": {"values": {"rate": 0}},

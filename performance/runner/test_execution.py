@@ -65,11 +65,14 @@ class PerformanceExecutionTest(unittest.TestCase):
         self.assertEqual(2, result["infrastructure_capacity"]["ecs"]["work_items_concurrency"])
         self.assertEqual({"work_items_concurrency": 2, "concurrent_test_runs": 1, "ecs_task_count": 1},
                          result["experiment"])
+        self.assertNotIn("completion.iterations", [check["name"] for check in result["acceptance"]["checks"]])
         self.metrics.validate_configuration.assert_called_once()
         self.api.create_suite.assert_called_once()
         self.k6.assert_called_once()
         self.subprocess.assert_not_called()
-        self.assertTrue((self.result_dir / "report.md").is_file())
+        report_path = self.result_dir / "report.md"
+        self.assertTrue(report_path.is_file())
+        self.assertNotIn("Iteration validity", report_path.read_text())
 
     def test_result_uses_resolved_dataset_and_profile_when_files_change_during_workload(self):
         fixtures = Path(__file__).resolve().parents[1] / "fixtures"
@@ -95,7 +98,15 @@ class PerformanceExecutionTest(unittest.TestCase):
         self.assertEqual(2, len(self.api.create_suite.call_args.args[0]["testCases"]))
 
     def test_staged_workload_preserves_curve_acceptance_and_iteration_validity_in_report(self):
+        def run_staged_k6(*args):
+            summary = passing_summary()
+            summary["metrics"]["test_run_iterations_started"] = {"values": {"count": 1}}
+            summary["metrics"]["test_run_iterations_completed"] = {"values": {"count": 1}}
+            args[4].write_text(json.dumps(summary))
+            return 0
+
         self.args.profile = str(Path(__file__).resolve().parents[1] / "fixtures/profiles/staged-stress.yaml")
+        self.k6.side_effect = run_staged_k6
 
         self.assertEqual(0, cli.execute(self.args))
 
