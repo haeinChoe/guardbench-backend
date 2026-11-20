@@ -26,8 +26,17 @@ const payload = JSON.stringify({
   },
 });
 
+function sleepUntilDeadline(deadline) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    return false;
+  }
+  sleep(Math.min(pollingIntervalSeconds, remainingMs / 1000));
+  return true;
+}
+
 function pollUntilFinished(testRunId, startedAt) {
-  const deadline = Date.now() + completionTimeoutSeconds * 1000;
+  const deadline = startedAt + completionTimeoutSeconds * 1000;
   let lastStatus = '';
   while (Date.now() < deadline) {
     const response = http.get(`${baseUrl}/api/v1/test-runs/${testRunId}`, {
@@ -41,7 +50,9 @@ function pollUntilFinished(testRunId, startedAt) {
     }
     lastStatus = body && body.data ? body.data.status : '';
     if (response.status !== 200 || !body || !body.data) {
-      sleep(pollingIntervalSeconds);
+      if (!sleepUntilDeadline(deadline)) {
+        break;
+      }
       continue;
     }
     if (lastStatus === 'FINISHED') {
@@ -50,12 +61,17 @@ function pollUntilFinished(testRunId, startedAt) {
       completionFailures.add(terminalFailure ? 1 : 0);
       return !terminalFailure;
     }
-    sleep(pollingIntervalSeconds);
+    if (!sleepUntilDeadline(deadline)) {
+      break;
+    }
   }
   completionFailures.add(1);
   console.error(`TestRun ${testRunId} did not finish before timeout (last status: ${lastStatus})`);
   return false;
 }
+
+const graceBufferSeconds = Math.max(1, Math.ceil(pollingIntervalSeconds));
+const graceSeconds = completionTimeoutSeconds + graceBufferSeconds;
 
 const configuredStages = __ENV.PERF_STAGES_JSON ? JSON.parse(__ENV.PERF_STAGES_JSON) : null;
 const stages = configuredStages
@@ -73,8 +89,8 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 0,
       stages,
-      gracefulRampDown: configuredStages ? `${completionTimeoutSeconds}s` : '0s',
-      gracefulStop: `${Number(__ENV.PERF_COMPLETION_TIMEOUT_SECONDS || 300)}s`,
+      gracefulRampDown: configuredStages ? `${graceSeconds}s` : '0s',
+      gracefulStop: `${graceSeconds}s`,
     },
   },
   summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(50)', 'p(90)', 'p(95)', 'p(99)'],

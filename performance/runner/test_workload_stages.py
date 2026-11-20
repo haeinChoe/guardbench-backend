@@ -1,6 +1,7 @@
 """Configuration and actual k6 checks for fixed-infrastructure workload stages."""
 import copy
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -210,9 +211,11 @@ class ActualK6StagesTest(unittest.TestCase):
                 scenario = inspected["scenarios"]["workload"]
                 self.assertEqual([{"duration": f"{stage['duration_seconds']}s", "target": stage["concurrent_test_runs"]}
                                   for stage in profile["workload"]["stages"]], scenario["stages"])
-                timeout = f"{profile['workload']['completion_timeout_seconds']}s"
-                self.assertEqual(timeout, scenario["gracefulRampDown"])
-                self.assertEqual(timeout, scenario["gracefulStop"])
+                expected_grace = (
+                    f"{profile['workload']['completion_timeout_seconds'] + max(1, math.ceil(profile['workload']['polling_interval_seconds']))}s"
+                )
+                self.assertEqual(expected_grace, scenario["gracefulRampDown"])
+                self.assertEqual(expected_grace, scenario["gracefulStop"])
                 api_acc = profile["acceptance"]["api"]
                 comp_acc = profile["acceptance"]["completion"]
                 expected_thresholds = {
@@ -236,7 +239,7 @@ class ActualK6StagesTest(unittest.TestCase):
         environment.update(K6_NO_USAGE_REPORT="true", K6_WEB_DASHBOARD="false")
         return environment
 
-    def _run_local_api(self, delay):
+    def _run_local_api(self, delay, *, status="FINISHED", polling_interval=None, failure_rate=0):
         requests = []
 
         class Handler(BaseHTTPRequestHandler):
@@ -261,7 +264,10 @@ class ActualK6StagesTest(unittest.TestCase):
 
             def do_GET(self):
                 time.sleep(delay)
-                self.respond(200, {"status": "FINISHED", "executionOutcome": "COMPLETED"})
+                payload = {"status": status}
+                if status == "FINISHED":
+                    payload["executionOutcome"] = "COMPLETED"
+                self.respond(200, payload)
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -273,6 +279,9 @@ class ActualK6StagesTest(unittest.TestCase):
                                            {"duration_seconds": 0.1, "concurrent_test_runs": 1},
                                            {"duration_seconds": 0.1, "concurrent_test_runs": 0},
                                        ])
+            if polling_interval is not None:
+                profile["workload"]["polling_interval_seconds"] = polling_interval
+            profile["acceptance"]["completion"]["failure_rate"] = failure_rate
             validate_profile(profile)
             environment = self._environment(profile, f"http://127.0.0.1:{server.server_port}")
             with tempfile.TemporaryDirectory() as directory:
@@ -300,8 +309,23 @@ class ActualK6StagesTest(unittest.TestCase):
         self.assertEqual(0, check["actual"]["interrupted"])
         self.assertEqual("PASS", result["status"], result)
 
+    def test_timeout_during_ramp_down_records_completion_failure_not_interruption(self):
+        summary = self._run_local_api(delay=0.02, status="RUNNING", polling_interval=0.3, failure_rate=1.0)
+        profile = staged_profile()
+        profile["acceptance"]["completion"]["failure_rate"] = 1.0
+        metrics = {"status": "COLLECTED", "metrics": [
+            {"id": prefix, "values": [1]} for prefix in ("ecs_", "sqs_", "rds_", "sagemaker_")
+        ]}
+        result = evaluate(profile, summary, {"passed": True, "duration_seconds": 0}, [], metrics)
+        by_name = {check["name"]: check for check in result["checks"]}
+        self.assertTrue(by_name["completion.iterations"]["passed"], by_name["completion.iterations"])
+        self.assertGreater(by_name["completion.iterations"]["actual"]["completed"], 0)
+        self.assertEqual(0, by_name["completion.iterations"]["actual"]["interrupted"])
+        self.assertTrue(by_name["completion.failure_rate"]["passed"], by_name["completion.failure_rate"])
+        self.assertEqual(1.0, by_name["completion.failure_rate"]["actual"])
+
     def test_forced_interruption_cannot_pass_completion_acceptance(self):
-        summary = self._run_local_api(delay=2)
+        summary = self._run_local_api(delay=3)
         result, check = iteration_check(summary)
         self.assertFalse(check["passed"], check)
         self.assertGreater(check["actual"]["interrupted"], 0)
