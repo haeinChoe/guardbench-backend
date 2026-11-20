@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -9,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,9 +19,10 @@ from botocore.exceptions import ClientError
 
 from performance.runner import cli
 from performance.runner.config import ConfigurationError
-from performance.runner.failure import sanitize_message
+from performance.runner.failure import RunContext, preserve_failure, sanitize_message
 from performance.runner.storage import (
     FAILURE_FILENAME,
+    OPTIONAL_RESULT_FILENAMES,
     RESULT_FILENAMES,
     UPLOAD_COMPLETE_FILENAME,
     ResultUploadError,
@@ -933,6 +936,185 @@ sys.exit(1)
         res, _ = run_download(setup_contaminated)
         self.assertEqual(1, res.returncode)
         self.assertIn("contains failure.json", res.stderr)
+
+        def write_optional_with_hashes(rp: Path, rid: str, *, include_plan_file: bool = True, corrupt_hash: bool = False):
+            write_canonical(rp, schema_version_mode="v2", include_marker=False, run_id=rid)
+            (rp / "experiment.yaml").write_text("schema_version: 1\nid: exp-1\n", encoding="utf-8")
+            declared = [*RESULT_FILENAMES, "experiment.yaml", "execution-plan.json"]
+            if include_plan_file:
+                (rp / "execution-plan.json").write_text('{"schema_version": 1}\n', encoding="utf-8")
+            hashes = {}
+            for name in declared:
+                target = rp / name
+                if target.is_file():
+                    hashes[name] = hashlib.sha256(target.read_bytes()).hexdigest()
+                else:
+                    hashes[name] = "0" * 64
+            if corrupt_hash:
+                hashes["result.json"] = "f" * 64
+            marker = {
+                "schema_version": 1,
+                "run_id": rid,
+                "status": "COMPLETE",
+                "completed_at": "2026-11-20T00:00:00Z",
+                "files": declared,
+                "file_sha256": hashes,
+            }
+            (rp / UPLOAD_COMPLETE_FILENAME).write_text(json.dumps(marker), encoding="utf-8")
+
+        # 8. schema_version=2 with optional experiment.yaml + execution-plan.json and matching file_sha256 -> passes
+        res, summary = run_download(lambda rp, fp, rid: write_optional_with_hashes(rp, rid))
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertIn("Downloaded s3://test-bucket/performance/results/smoke-run-1/", summary)
+
+        # 9. schema_version=2 declaring execution-plan.json in upload-complete.json when missing from S3 -> rejected
+        res, _ = run_download(lambda rp, fp, rid: write_optional_with_hashes(rp, rid, include_plan_file=False))
+        self.assertEqual(1, res.returncode)
+        self.assertIn("execution-plan.json", res.stderr)
+
+        # 10. schema_version=2 with SHA-256 mismatch in file_sha256 -> rejected
+        res, _ = run_download(lambda rp, fp, rid: write_optional_with_hashes(rp, rid, corrupt_hash=True))
+        self.assertEqual(1, res.returncode)
+        self.assertIn("SHA-256 mismatch", res.stderr)
+
+    def test_optional_experiment_and_plan_artifacts_in_completed_upload_and_hashes(self):
+        # 1. With optional experiment.yaml + execution-plan.json present
+        with_optional_dir = self.temp_dir / "complete-with-optional"
+        with_optional_dir.mkdir()
+        for name in RESULT_FILENAMES:
+            if name == "result.json":
+                (with_optional_dir / name).write_text('{"schema_version": 2}', encoding="utf-8")
+            else:
+                (with_optional_dir / name).write_text(f"content:{name}", encoding="utf-8")
+        (with_optional_dir / "experiment.yaml").write_text("schema_version: 1\nid: exp-opt\n", encoding="utf-8")
+        (with_optional_dir / "execution-plan.json").write_text('{"schema_version": 1}\n', encoding="utf-8")
+
+        s3_with = FakeS3Client()
+        upload_result_directory(with_optional_dir, "bucket", "run-opt", s3_client=s3_with)
+        expected_files = [*RESULT_FILENAMES, *OPTIONAL_RESULT_FILENAMES]
+        self.assertEqual([*expected_files, UPLOAD_COMPLETE_FILENAME], [name for name, _, _ in s3_with.calls])
+        marker_with = json.loads(
+            s3_with.objects[f"performance/results/run-opt/{UPLOAD_COMPLETE_FILENAME}"].decode("utf-8")
+        )
+        self.assertEqual(expected_files, marker_with["files"])
+        self.assertEqual(2, marker_with["result_schema_version"])
+        self.assertEqual(set(expected_files), set(marker_with["file_sha256"]))
+        for name in expected_files:
+            expected_digest = hashlib.sha256((with_optional_dir / name).read_bytes()).hexdigest()
+            self.assertEqual(expected_digest, marker_with["file_sha256"][name])
+
+        # 2. Without optional files: 6 core files + matching SHA-256 hashes
+        without_optional_dir = self.temp_dir / "complete-without-optional"
+        without_optional_dir.mkdir()
+        for name in RESULT_FILENAMES:
+            (without_optional_dir / name).write_text(f"core:{name}", encoding="utf-8")
+        s3_without = FakeS3Client()
+        upload_result_directory(without_optional_dir, "bucket", "run-core", s3_client=s3_without)
+        self.assertEqual([*RESULT_FILENAMES, UPLOAD_COMPLETE_FILENAME], [name for name, _, _ in s3_without.calls])
+        marker_without = json.loads(
+            s3_without.objects[f"performance/results/run-core/{UPLOAD_COMPLETE_FILENAME}"].decode("utf-8")
+        )
+        self.assertEqual(list(RESULT_FILENAMES), marker_without["files"])
+        for name in RESULT_FILENAMES:
+            expected_digest = hashlib.sha256((without_optional_dir / name).read_bytes()).hexdigest()
+            self.assertEqual(expected_digest, marker_without["file_sha256"][name])
+
+        # 3. Missing core file must still fail strictly even if optional files exist
+        missing_core_dir = self.temp_dir / "missing-core"
+        missing_core_dir.mkdir()
+        for name in RESULT_FILENAMES:
+            if name != "aws-metrics.json":
+                (missing_core_dir / name).write_text("{}", encoding="utf-8")
+        (missing_core_dir / "experiment.yaml").write_text("id: exp\n", encoding="utf-8")
+        (missing_core_dir / "execution-plan.json").write_text("{}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ResultUploadError, "aws-metrics.json"):
+            upload_result_directory(missing_core_dir, "bucket", "run-bad", s3_client=FakeS3Client())
+
+    def test_experiment_metadata_and_optional_artifacts_in_failure_preservation(self):
+        # Case A: Early failure via args.experiment passed into cli.execute()
+        exp_file = self.temp_dir / "experiment.yaml"
+        exp_file.write_text("schema_version: 1\nid: exp-early\n", encoding="utf-8")
+        missing_profile = self.temp_dir / "missing-profile.yaml"
+        fake_s3_a = FakeS3Client()
+        dir_a = self.temp_dir / "exp-early-dir"
+        args = cli.parser().parse_args(["--profile", str(missing_profile), "--result-dir", str(dir_a)])
+        args.experiment = str(exp_file)
+        with (
+            patch("performance.runner.storage.boto3.client", return_value=fake_s3_a),
+            patch.dict(
+                os.environ,
+                {"APP_REVISION": "app-sha", "PERFORMANCE_RESULTS_BUCKET": "perf-results-bucket"},
+                clear=True,
+            ),
+        ):
+            with self.assertRaises(ConfigurationError):
+                cli.execute(args)
+
+        failure_a = self._read_failure(dir_a)
+        self.assertEqual(str(exp_file.resolve()), failure_a["inputs"]["experiment_path"])
+        self.assertTrue((dir_a / "experiment.yaml").is_file())
+        self.assertIn("experiment.yaml", failure_a["available_artifacts"])
+        self.assertIn(f"performance/failures/{failure_a['run_id']}/experiment.yaml", fake_s3_a.objects)
+
+        # Case B: RunContext.record_execution_plan populates experiment & infra metadata cleanly
+        ctx_plan = RunContext(run_id="run-plan", started_at=datetime.now(timezone.utc))
+        ctx_plan.record_execution_plan({
+            "experiment": {"id": "exp-plan", "mode": "synthetic"},
+            "infrastructure": {"id": "infra-small", "revision": "infra-rev-1"},
+            "sources": {"experiment": {"path": str(exp_file)}},
+            "profile": {"test": {"id": "PERF-OP-01", "type": "LOAD"}},
+            "dataset": {"id": "baseline-v1", "test_case_count": 78},
+        })
+        self.assertEqual(str(exp_file.resolve()), ctx_plan.inputs["experiment_path"])
+        self.assertEqual("exp-plan", ctx_plan.inputs["experiment_id"])
+        self.assertEqual("synthetic", ctx_plan.inputs["experiment_mode"])
+        self.assertEqual("infra-small", ctx_plan.inputs["infrastructure_id"])
+        self.assertEqual("infra-rev-1", ctx_plan.inputs["infrastructure_revision"])
+        self.assertEqual("PERF-OP-01", ctx_plan.inputs["profile_id"])
+        self.assertEqual(78, ctx_plan.inputs["test_case_count"])
+
+        # Case C: Backfill from execution-plan.json without overwriting existing inputs, plus partial S3 upload
+        dir_b = self.temp_dir / "exp-backfill-dir"
+        dir_b.mkdir()
+        (dir_b / "experiment.yaml").write_text("schema_version: 1\nid: exp-backfill\n", encoding="utf-8")
+        (dir_b / "execution-plan.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "experiment": {"id": "from-plan", "mode": "synthetic"},
+                "infrastructure": {"id": "fixture-small", "revision": "fixture-v1"},
+                "sources": {"experiment": {"path": str(exp_file)}},
+            }),
+            encoding="utf-8",
+        )
+        (dir_b / UPLOAD_COMPLETE_FILENAME).write_text("{}", encoding="utf-8")
+        ctx_b = RunContext(
+            run_id="run-backfill-1",
+            started_at=datetime.now(timezone.utc),
+            result_dir=dir_b,
+            result_dir_owned=True,
+            phase="k6",
+        )
+        ctx_b.record_experiment(experiment_id="explicit-id")
+        fake_s3_b = FakeS3Client()
+        failure_path, preservation_errors = preserve_failure(
+            ctx_b,
+            cli.RunnerError("k6 boom"),
+            bucket="perf-results-bucket",
+            s3_client=fake_s3_b,
+        )
+        self.assertEqual([], preservation_errors)
+        self.assertIsNotNone(failure_path)
+        failure_b = self._read_failure(dir_b)
+        self.assertEqual("explicit-id", failure_b["inputs"]["experiment_id"])
+        self.assertEqual(str(exp_file), failure_b["inputs"]["experiment_path"])
+        self.assertEqual("synthetic", failure_b["inputs"]["experiment_mode"])
+        self.assertEqual("fixture-small", failure_b["inputs"]["infrastructure_id"])
+        self.assertEqual("fixture-v1", failure_b["inputs"]["infrastructure_revision"])
+        self.assertIn("experiment.yaml", failure_b["available_artifacts"])
+        self.assertIn("execution-plan.json", failure_b["available_artifacts"])
+        self.assertIn("performance/failures/run-backfill-1/experiment.yaml", fake_s3_b.objects)
+        self.assertIn("performance/failures/run-backfill-1/execution-plan.json", fake_s3_b.objects)
+        self.assertNotIn("performance/failures/run-backfill-1/upload-complete.json", fake_s3_b.objects)
 
 
 if __name__ == "__main__":
