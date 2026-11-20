@@ -27,6 +27,8 @@ def acceptance_profile() -> dict:
 
 def passing_summary() -> dict:
     return {"metrics": {
+        "test_run_iterations_started": {"values": {"count": 1}},
+        "test_run_iterations_completed": {"values": {"count": 1}},
         "test_run_create_latency": {"values": {"p(50)": 1, "p(95)": 1, "p(99)": 1}},
         "test_run_create_errors": {"values": {"rate": 0}},
         "test_run_completion_failures": {"values": {"rate": 0}},

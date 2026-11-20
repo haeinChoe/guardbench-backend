@@ -94,6 +94,21 @@ class PerformanceExecutionTest(unittest.TestCase):
         self.assertEqual("FIXTURE-OPERATING", result["profile"]["test"]["id"])
         self.assertEqual(2, len(self.api.create_suite.call_args.args[0]["testCases"]))
 
+    def test_staged_workload_preserves_curve_acceptance_and_iteration_validity_in_report(self):
+        self.args.profile = str(Path(__file__).resolve().parents[1] / "fixtures/profiles/staged-stress.yaml")
+
+        self.assertEqual(0, cli.execute(self.args))
+
+        result = json.loads((self.result_dir / "result.json").read_text())
+        self.assertEqual(3, result["experiment"]["concurrent_test_runs"])
+        self.assertEqual(5, len(result["profile"]["workload"]["stages"]))
+        self.assertEqual(0, result["profile"]["acceptance"]["completion"]["failure_rate"])
+        report = (self.result_dir / "report.md").read_text()
+        self.assertIn("max configured VU target 3", report)
+        self.assertIn("1s → 0 VUs", report)
+        self.assertIn("'interrupted': 0", report)
+        self.assertIn("**PASS**", report)
+
     def test_active_run_blocks_seed_and_workload(self):
         self.api.list_runs.return_value = [{"id": 9}]
         with self.assertRaisesRegex(cli.RunnerError, "처리 중"):
