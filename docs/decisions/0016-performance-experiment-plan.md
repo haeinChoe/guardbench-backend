@@ -38,6 +38,27 @@ IaC/배포 설정이, workload와 acceptance는 Profile이 소유하는 기존 �
 한 manifest는 한 실험만 가리킨다. matrix/병렬 실험, DB reset/TRUNCATE, queue purge,
 AWS resource 생성/삭제, CodeBuild/Fargate 선택은 포함하지 않는다.
 
+### 테스트 유형과 프로필 구현 범위
+
+성능 테스트에는 `SMOKE`, `STRESS`, `SOAK` 세 유형을 사용한다. 인프라 구성은
+실행 동안 고정하고 테스트 유형은 해당 인프라에서 확인할 실험 목적을 나타낸다.
+
+| 유형 | 목적 |
+| --- | --- |
+| `SMOKE` | 적은 부하로 TestRun 접수부터 비동기 처리·완료·결과 수집까지 실행 경로를 확인한다. |
+| `STRESS` | 부하를 높이면서 처리 한계, 지연, SQS backlog와 실패 양상을 확인한다. |
+| `SOAK` | 일정한 부하를 장시간 유지하며 메모리·연결·backlog·오류 누적을 확인한다. |
+
+현재 프로필 파일은 `performance/profiles/smoke.yaml`(`SMOKE`)과
+`performance/profiles/concurrent-10.yaml`(`LOAD`)이다. 입력 검증은 `SMOKE`, `LOAD`,
+`PEAK`, `STRESS`, `SOAK`를 허용하지만 `PEAK`, `STRESS`, `SOAK`의 프로필 파일은 없다.
+허용 타입의 존재와 해당 프로필의 구현 여부를 구분한다.
+
+이 결정은 사용할 유형과 목적을 정의한다. 각 프로필의 부하 수치·시간·판정 기준,
+단계형 부하의 구체적인 구현은 별도 Issue #23에서 다룬다. 기존 `LOAD` 프로필과
+허용 타입의 전환·제거는 해당 구현에서 실제 소비처를 확인한 뒤 명시적으로 처리한다.
+이 문서 변경으로 프로필 파일이나 Runner의 허용 타입을 변경하지 않는다.
+
 ### 실행 manifest v1
 
 `--experiment <yaml>`을 추가한다. 파일 참조는 manifest의 디렉터리를 기준으로 해석한다.
