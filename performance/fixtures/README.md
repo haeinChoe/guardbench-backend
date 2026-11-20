@@ -1,7 +1,7 @@
 # Experiment input validation fixtures
 
-These files validate the Runner's proposed experiment manifest v1 interface
-([ADR 0016](../../docs/decisions/0016-performance-experiment-plan.md), DRAFT).
+These files validate the Runner's experiment manifest v1 interface
+([ADR 0016](../../docs/decisions/0016-performance-experiment-plan.md), APPROVED/ACCEPTED).
 Resource names, CPU/memory, counts, workload and acceptance values are mock inputs.
 They do not define an AWS small preset or operating goals.
 
