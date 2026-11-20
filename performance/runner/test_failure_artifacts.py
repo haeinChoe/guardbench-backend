@@ -1059,7 +1059,7 @@ sys.exit(1)
         # Case B: RunContext.record_execution_plan populates experiment & infra metadata cleanly
         ctx_plan = RunContext(run_id="run-plan", started_at=datetime.now(timezone.utc))
         ctx_plan.record_execution_plan({
-            "experiment": {"id": "exp-plan"},
+            "experiment": {"id": "exp-plan", "mode": "synthetic"},
             "infrastructure": {"id": "infra-small", "revision": "infra-rev-1"},
             "sources": {"experiment": {"path": str(exp_file)}},
             "profile": {"test": {"id": "PERF-OP-01", "type": "LOAD"}},
@@ -1080,7 +1080,7 @@ sys.exit(1)
         (dir_b / "execution-plan.json").write_text(
             json.dumps({
                 "schema_version": 1,
-                "experiment": {"id": "from-plan"},
+                "experiment": {"id": "from-plan", "mode": "synthetic"},
                 "infrastructure": {"id": "fixture-small", "revision": "fixture-v1"},
                 "sources": {"experiment": {"path": str(exp_file)}},
             }),
