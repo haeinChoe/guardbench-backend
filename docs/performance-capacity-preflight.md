@@ -3,11 +3,10 @@
 > Status: DRAFT
 > Owner: Backend
 > Related Issue: #22 (선행 #20, #21)
-> AI assistance: 사용자 일괄 구현 위임에 따라 작성한 검토용 구현 설명이며 승인 계약으로 승격하지 않는다.
+> AI assistance: 구현 검토가 필요한 초안이다.
 
 `--experiment` 실행은 [ADR 0016](decisions/0016-performance-experiment-plan.md)의
-`infrastructure.expected`와 독립적으로 조회한 AWS 값을 대조한다. `mode: synthetic`도
-동일한 경로를 사용한다. 대역은 로컬 검증 harness가 주입하며 Runner 우회 flag는 없다.
+`infrastructure.expected`와 독립적으로 조회한 AWS 값을 대조한다.
 `--dry-run`은 기존처럼 외부 서비스를 호출하지 않는다.
 
 - ECS Worker와 선택적 API를 각 cluster/service로 조회한다. CPU/memory, desired/running,

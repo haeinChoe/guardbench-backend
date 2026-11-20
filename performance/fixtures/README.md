@@ -19,7 +19,9 @@ Use a new result directory for each invocation. No AWS credentials, running API,
 DB or k6 are needed. The command validates and prints the plan, writes
 `execution-plan.json` and `dry-run.json`, and preserves original `experiment.yaml`,
 `profile.yaml` and `dataset.yaml` files. It makes no external calls.
-At this stage `--experiment` requires `--dry-run`; actual execution follows in #22.
+Omit `--dry-run` to execute against the configured services. Actual execution requires
+application/infrastructure revisions, API and queue connection settings, and a matching
+AWS capacity snapshot before seeding or starting k6.
 
 A manifest selects one infrastructure ID/revision, expected capacity, Profile and
 Dataset. Worker ECS, RDS and SageMaker expectations are required; API ECS is
