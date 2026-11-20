@@ -85,15 +85,20 @@ k6 `ramping-vus`의 각 stage는 지정한 duration 동안 이전 target에서 �
 최대 configured VU target이며 관측된 사용자 수·실제 동시 Run 수를 보장하는 값이 아니다.
 한 VU는 TestRun 한 건을 생성하고 FINISHED까지 polling한다. 시나리오 이름별 실행 분기는 없다.
 
-단계형 경로의 `gracefulRampDown`과 `gracefulStop`은 completion timeout과 같다.
-하강 구간에서도 진행 중 polling을 기다리므로 실제 종료 시각은 선언한 stage duration의 합보다
-늦을 수 있다. 새 workload의 `test_run_iterations_started`와
-`test_run_iterations_completed` Counter는 실제 TestRun iteration만 센다.
-반복 상한 때문에 건너뛴 k6 iteration은 제외한다. 접수 실패 또는 완료/timeout polling을
-반영한 뒤에만 completed를 증가시킨다. `completion.iterations` 판정은
-`started = completed > 0`을 요구하고, `interrupted = started - completed`를 결과와 report에
-남긴다. Counter 누락·0건·불일치는 FAIL이다. 기존 보관 artifact를 다시 작성하지 않으며,
-과거 Counter 없는 summary를 새 실행의 유효한 완료 측정으로 취급하지 않는다.
+단계형 경로의 `gracefulRampDown`과 일반 종료 `gracefulStop`은
+`completion_timeout_seconds + max(1, ceil(polling_interval_seconds))`의 제한된 여유 시간을
+두어 timeout 직전 polling과 `completionFailures`/`iterationsCompleted` 집계가 끊기지 않게 한다.
+또한 polling loop는 `startedAt + completion_timeout_seconds`를 마감 시각으로 삼아 대기 시간을
+남은 예산 안으로 제한한다. 하강 구간에서도 진행 중 polling을 기다리므로 실제 종료 시각은 선언한
+stage duration의 합보다 늦을 수 있다. 새 workload의 `test_run_iterations_started`와
+`test_run_iterations_completed` Counter는 실제 TestRun iteration이 강제 중단 없이 끝까지
+실행됐는지 센다. 반복 상한 때문에 건너뛴 k6 iteration은 제외하며, 접수 실패 또는 완료/timeout
+polling을 반영한 뒤에만 completed를 증가시킨다(TestRun 성공 여부는 `api.create_error_rate`와
+`completion.failure_rate`가 별도로 판정한다). `completion.iterations` 판정은
+`workload.stages`를 선언한 단계형 Profile에만 적용해 `started = completed > 0`을 요구하고
+`interrupted = started - completed`를 결과와 report에 남긴다. 기존
+`ramp_up_seconds`/`duration_seconds` 기반 승인 Profile에는 이 새 판정을 강제하지 않으며,
+기존 보관 artifact도 다시 작성하지 않는다.
 
 검증용 곡선은 [`staged-operating.yaml`](../fixtures/profiles/staged-operating.yaml)과
 [`staged-stress.yaml`](../fixtures/profiles/staged-stress.yaml)에 있다. 두 fixture는 동일 schema의
