@@ -1,14 +1,13 @@
 # 0016. 인프라 구성과 시나리오를 분리한 성능 실험 실행 계획
 
-> Status: DRAFT
+> Status: APPROVED
 > Owner: Backend
-> Last reviewed: 2026-11-20
+> Last reviewed: 2026-11-21
 > Canonical source: GitHub
 > Origin: GitHub Issue #20
-> AI assistance: 검토용 설계 제안이며 사람의 최종 리뷰가 필요하다.
 
-- ADR Status: PROPOSED
-- Decision date: 2026-11-20
+- ADR Status: ACCEPTED
+- Decision date: 2026-11-21
 - Related Issue: #20; 구현·검증 #21–#26
 
 ## Context
@@ -37,6 +36,27 @@ IaC/배포 설정이, workload와 acceptance는 Profile이 소유하는 기존 �
 
 한 manifest는 한 실험만 가리킨다. matrix/병렬 실험, DB reset/TRUNCATE, queue purge,
 AWS resource 생성/삭제, CodeBuild/Fargate 선택은 포함하지 않는다.
+
+### 테스트 유형과 프로필 구현 범위
+
+성능 테스트에는 `SMOKE`, `STRESS`, `SOAK` 세 유형을 사용한다. 인프라 구성은
+실행 동안 고정하고 테스트 유형은 해당 인프라에서 확인할 실험 목적을 나타낸다.
+
+| 유형 | 목적 |
+| --- | --- |
+| `SMOKE` | 적은 부하로 TestRun 접수부터 비동기 처리·완료·결과 수집까지 실행 경로를 확인한다. |
+| `STRESS` | 부하를 높이면서 처리 한계, 지연, SQS backlog와 실패 양상을 확인한다. |
+| `SOAK` | 일정한 부하를 장시간 유지하며 메모리·연결·backlog·오류 누적을 확인한다. |
+
+현재 프로필 파일은 `performance/profiles/smoke.yaml`(`SMOKE`)과
+`performance/profiles/concurrent-10.yaml`(`LOAD`)이다. 입력 검증은 `SMOKE`, `LOAD`,
+`PEAK`, `STRESS`, `SOAK`를 허용하지만 `PEAK`, `STRESS`, `SOAK`의 프로필 파일은 없다.
+허용 타입의 존재와 해당 프로필의 구현 여부를 구분한다.
+
+이 결정은 사용할 유형과 목적을 정의한다. 각 프로필의 부하 수치·시간·판정 기준,
+단계형 부하의 구체적인 구현은 별도 Issue #23에서 다룬다. 기존 `LOAD` 프로필과
+허용 타입의 전환·제거는 해당 구현에서 실제 소비처를 확인한 뒤 명시적으로 처리한다.
+이 문서 변경으로 프로필 파일이나 Runner의 허용 타입을 변경하지 않는다.
 
 ### 실행 manifest v1
 
@@ -167,7 +187,7 @@ phase=upload를 남긴다. 입력 검증 이전에 최소 run ID·단계를 마�
 
 1. 환경변수·CLI만 확장: 기존 연계는 쉽지만 여러 입력의 조합과 실제 revision을 한 번에 검토·보존하기 어렵다.
 2. workload Profile에 CPU/memory/tier까지 추가: 한 파일은 간단하지만 기존 승인된 소유권을 깨므로 선택하지 않는다.
-3. 단일 manifest + 기존 Profile/Dataset 참조: 새 입력 검증이 필요하지만 소유권과 재현성을 함께 유지하므로 제안한다.
+3. 단일 manifest + 기존 Profile/Dataset 참조: 새 입력 검증이 필요하지만 소유권과 재현성을 함께 유지하므로 채택한다.
 
 ## Consequences
 
