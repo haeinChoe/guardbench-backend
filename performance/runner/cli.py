@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .capacity import assert_manifest_capacity
 from .acceptance import evaluate
 from .api import ApiClient, ApiError
 from .aws import (
@@ -224,6 +225,7 @@ def _report(result: dict[str, Any]) -> str:
     workload = profile["workload"]
     acceptance = profile["acceptance"]
     capacity = result["infrastructure_capacity"]
+    worker_capacity = capacity["ecs"].get("worker", capacity["ecs"])
     decision = result.get("acceptance", {}).get("status", "FAIL")
     diagnostics = result.get("test_run_diagnostics", {})
     lines = [
@@ -257,7 +259,7 @@ def _report(result: dict[str, Any]) -> str:
         "## Infrastructure Capacity Snapshot",
         "",
         f"- Captured at: {capacity['captured_at']}",
-        f"- ECS: cluster `{capacity['ecs']['cluster_identifier']}`, service `{capacity['ecs']['service_identifier']}`, WorkItem concurrency {capacity['ecs']['work_items_concurrency']}, desired {capacity['ecs']['desired_count']}, running {capacity['ecs']['running_task_count']}, task CPU {capacity['ecs']['task_cpu']}, task memory {capacity['ecs']['task_memory']}",
+        f"- ECS: cluster `{worker_capacity['cluster_identifier']}`, service `{worker_capacity['service_identifier']}`, WorkItem concurrency {worker_capacity['work_items_concurrency']}, desired {worker_capacity['desired_count']}, running {worker_capacity['running_task_count']}, task CPU {worker_capacity['task_cpu']}, task memory {worker_capacity['task_memory']}",
         f"- RDS: instance `{capacity['rds']['db_instance_identifier']}`, class `{capacity['rds']['db_instance_class']}`",
         f"- SageMaker: endpoint `{capacity['sagemaker']['endpoint_name']}`, variant `{capacity['sagemaker']['production_variant_name']}`, type `{capacity['sagemaker']['instance_type']}`, desired {capacity['sagemaker']['desired_instance_count']}, current {capacity['sagemaker']['current_instance_count']}",
         "- 위 값은 실행 전 configured capacity snapshot이며, 실행 중 관측값은 `aws-metrics.json`에 별도로 저장한다.",
@@ -282,8 +284,6 @@ def execute(args: argparse.Namespace) -> int:
         if args.profile is not None or args.dataset is not None:
             raise ConfigurationError("--experiment는 --profile/--dataset과 함께 지정할 수 없습니다.")
         execution_plan = load_execution_plan(Path(args.experiment))
-        if not args.dry_run:
-            raise ConfigurationError("--experiment 실제 실행은 capacity preflight 통합 후 지원합니다. --dry-run을 사용하세요.")
         profile_path = execution_plan.source_paths["profile"]
         dataset_path = execution_plan.source_paths["dataset"]
         profile = execution_plan.profile
@@ -325,13 +325,18 @@ def execute(args: argparse.Namespace) -> int:
         raise ConfigurationError("실제 성능 실행에는 PERF_BASE_URL이 필요합니다.")
     api = ApiClient(base_url)
     source_urls, dlq_urls = queue_urls_from_environment()
-    expected_capacity = expected_infrastructure_capacity_from_environment()
+    expected_capacity = (execution_plan.to_dict()["infrastructure"]["expected"] if execution_plan
+                         else expected_infrastructure_capacity_from_environment())
     inspector = QueueInspector()
-    metric_collector = CloudWatchMetricCollector(repo_root / "performance/metrics/aws.yaml")
+    metric_collector = (CloudWatchMetricCollector(repo_root / "performance/metrics/aws.yaml", resources=expected_capacity)
+                        if execution_plan else CloudWatchMetricCollector(repo_root / "performance/metrics/aws.yaml"))
     metric_collector.validate_configuration()
     preflight = _assert_preflight(api, inspector, source_urls, dlq_urls)
-    infrastructure_capacity = InfrastructureCapacityCollector().collect()
-    preflight["capacity"] = _assert_capacity_preflight(expected_capacity, infrastructure_capacity)
+    collector = InfrastructureCapacityCollector()
+    infrastructure_capacity = collector.collect(expected=expected_capacity) if execution_plan else collector.collect()
+    preflight["capacity"] = (assert_manifest_capacity(expected_capacity, infrastructure_capacity) if execution_plan
+                             else _assert_capacity_preflight(expected_capacity, infrastructure_capacity))
+    worker_capacity = infrastructure_capacity["ecs"].get("worker", infrastructure_capacity["ecs"])
     infrastructure_capacity["revisions"] = revisions
 
     api.health_check()
@@ -364,9 +369,9 @@ def execute(args: argparse.Namespace) -> int:
         "revisions": revisions,
         "infrastructure_capacity": infrastructure_capacity,
         "experiment": {
-            "work_items_concurrency": infrastructure_capacity["ecs"]["work_items_concurrency"],
+            "work_items_concurrency": worker_capacity["work_items_concurrency"],
             "concurrent_test_runs": workload["concurrent_test_runs"],
-            "ecs_task_count": infrastructure_capacity["ecs"]["desired_count"],
+            "ecs_task_count": worker_capacity["desired_count"],
         },
         "dataset": {"id": dataset["id"], "test_case_count": test_case_count,
                     "suite_id": suite_id},

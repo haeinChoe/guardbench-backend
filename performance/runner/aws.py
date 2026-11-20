@@ -145,7 +145,10 @@ class InfrastructureCapacityCollector:
         self.rds_client = rds_client or boto3.client("rds", region_name=region_name)
         self.sagemaker_client = sagemaker_client or boto3.client("sagemaker", region_name=region_name)
 
-    def collect(self) -> dict[str, Any]:
+    def collect(self, *, expected: dict[str, Any] | None = None) -> dict[str, Any]:
+        if expected is not None:
+            from .capacity import collect_manifest_capacity
+            return collect_manifest_capacity(self, expected)
         cluster = _required_environment("PERF_ECS_CLUSTER")
         service = _required_environment("PERF_ECS_SERVICE")
         rds_instance = _required_environment("PERF_RDS_INSTANCE_ID")
@@ -249,10 +252,25 @@ class InfrastructureCapacityCollector:
 
 
 class CloudWatchMetricCollector:
-    def __init__(self, config_path: Path, region: str | None = None) -> None:
+    def __init__(self, config_path: Path, region: str | None = None, *,
+                 resources: dict[str, Any] | None = None, cloudwatch_client=None) -> None:
         self.config = load_yaml(config_path)
-        boto3 = _boto3()
-        self.client = boto3.client(
+        if resources is not None:
+            bindings = {
+                "AWS/ECS": {"ClusterName": resources["ecs"]["worker"]["cluster_identifier"].rsplit("/", 1)[-1],
+                            "ServiceName": resources["ecs"]["worker"]["service_identifier"].rsplit("/", 1)[-1]},
+                "ECS/ContainerInsights": {"ClusterName": resources["ecs"]["worker"]["cluster_identifier"].rsplit("/", 1)[-1],
+                                         "ServiceName": resources["ecs"]["worker"]["service_identifier"].rsplit("/", 1)[-1]},
+                "AWS/RDS": {"DBInstanceIdentifier": resources["rds"]["db_instance_identifier"]},
+                "AWS/SageMaker": {"EndpointName": resources["sagemaker"]["endpoint_name"],
+                                  "VariantName": resources["sagemaker"]["production_variant_name"]},
+            }
+            for definition in self.config.get("metrics", []):
+                for key, value in bindings.get(definition.get("namespace"), {}).items():
+                    if key in definition.get("dimensions", {}):
+                        definition["dimensions"][key] = value
+        boto3 = _boto3() if cloudwatch_client is None else None
+        self.client = cloudwatch_client if cloudwatch_client is not None else boto3.client(
             "cloudwatch",
             region_name=region or os.environ.get("AWS_REGION", "ap-northeast-2"),
             endpoint_url=os.environ.get("PERF_CLOUDWATCH_ENDPOINT_URL") or None,

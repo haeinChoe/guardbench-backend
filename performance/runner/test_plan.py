@@ -247,10 +247,10 @@ class ExecutionPlanTest(unittest.TestCase):
             with self.assertRaisesRegex(ConfigurationError, "함께"):
                 cli.execute(args)
 
-    def test_experiment_actual_run_is_staged_until_capacity_preflight_integration(self):
-        args = cli.parser().parse_args(["--experiment", str(self.manifest_path)])
-        with patch.object(cli, "ApiClient", side_effect=AssertionError("unexpected API")):
-            with self.assertRaisesRegex(ConfigurationError, "capacity preflight"):
+    def test_experiment_actual_run_requires_runtime_revisions(self):
+        args = cli.parser().parse_args(["--experiment", str(self.manifest_path), "--result-dir", str(self.directory / "actual")])
+        with patch.dict(os.environ, {}, clear=True), patch.object(cli, "ApiClient", side_effect=AssertionError("unexpected API")):
+            with self.assertRaisesRegex(ConfigurationError, "APP_REVISION"):
                 cli.execute(args)
 
     def test_legacy_explicit_and_default_dry_run_consumers_remain_supported(self):
