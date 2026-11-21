@@ -2,10 +2,12 @@
 
 > Status: DRAFT
 > Owner: Backend
-> Related Issue: #22 (선행 #20, #21)
+> Last reviewed: 2026-11-21
+> Canonical source: GitHub
+> Related Issue: #22 (선행 PR #27, PR #28)
 > AI assistance: 구현 검토가 필요한 초안이다.
 
-`--experiment` 실행은 [ADR 0016](decisions/0016-performance-experiment-plan.md)의
+`--experiment` 실행은 [ADR 0016](decisions/0016-performance-experiment-plan.md)(APPROVED/ACCEPTED)의
 `infrastructure.expected`와 독립적으로 조회한 AWS 값을 대조한다.
 `--dry-run`은 기존처럼 외부 서비스를 호출하지 않는다.
 
