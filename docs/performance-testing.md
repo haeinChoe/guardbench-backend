@@ -274,7 +274,7 @@ s3://<PERFORMANCE_RESULTS_BUCKET>/performance/failures/<run-id>/
 - **분석 workflow(`performance-analysis-bundle.yml`)**:
   - `performance/results/<run-id>/`에 `failure.json`이 존재하거나 canonical 파일이 누락되면 CloudWatch Logs 번들링을 진행하지 않고 실패로 종료한다.
   - 모든 결과에 대해 `result.json`의 `schema_version >= 2`, `upload-complete.json` 완료 표식(`status: "COMPLETE"`, `run_id` 일치, 8개 canonical 파일의 `files[]` 선언과 존재), 그리고 선언된 모든 파일의 `file_sha256` 일치를 검증한다. `file_sha256`가 없는 표식도 거부한다.
-  - `schema_version`이 없는 과거 결과의 호환 경로는 제거했다(ADR 0016 Amendments). 이런 결과는 번들링하지 않고 실패로 종료한다.
+  - `result.json`의 `schema_version`이 없거나 2 미만이면 번들링하지 않고 실패로 종료한다.
   - 불완전하거나 실패한 실행에서는 `performance/failures/<run-id>/failure.json` 존재 여부를 확인해 실패 `phase`, `error.type`과 진단 경로를 안내한다.
 
 로컬 API에 대한 입력 검증은 `--dry-run`으로 수행할 수 있다. 실제 비동기 Smoke 실행은
