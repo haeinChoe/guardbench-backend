@@ -354,12 +354,12 @@ class FailureArtifactsTest(unittest.TestCase):
                 k6.assert_not_called()
                 failure = self._read_failure(sub_dir)
                 self.assertEqual("seed", failure["phase"])
-                self.assertEqual("FIXTURE-OPERATING", failure["inputs"]["profile_id"])
+                self.assertEqual("FIXTURE-SMOKE", failure["inputs"]["profile_id"])
                 self.assertEqual("SMOKE", failure["inputs"]["profile_type"])
                 self.assertEqual("fixture-two-cases-v1", failure["inputs"]["dataset_id"])
                 self.assertEqual(2, failure["inputs"]["test_case_count"])
-                self.assertEqual("fixture-small-operating", failure["inputs"]["experiment_id"])
-                self.assertEqual("fixture-small", failure["inputs"]["infrastructure_id"])
+                self.assertEqual("fixture-smoke", failure["inputs"]["experiment_id"])
+                self.assertEqual("fixture-infra", failure["inputs"]["infrastructure_id"])
                 self.assertEqual("fixture-v1", failure["inputs"]["infrastructure_revision"])
                 self.assertEqual(str(self.manifest_path.resolve()), failure["inputs"]["experiment_path"])
                 self.assertEqual(str(self.profile_path.resolve()), failure["inputs"]["profile_path"])
@@ -949,7 +949,7 @@ sys.exit(1)
         ctx_plan = RunContext(run_id="run-plan", started_at=datetime.now(timezone.utc))
         ctx_plan.record_execution_plan({
             "experiment": {"id": "exp-plan", "mode": "synthetic"},
-            "infrastructure": {"id": "infra-small", "revision": "infra-rev-1"},
+            "infrastructure": {"id": "infra-fixture", "revision": "infra-rev-1"},
             "sources": {"experiment": {"path": str(exp_file)}},
             "profile": {"test": {"id": "PERF-OP-01", "type": "SMOKE"}},
             "dataset": {"id": "baseline-v1", "test_case_count": 78},
@@ -957,7 +957,7 @@ sys.exit(1)
         self.assertEqual(str(exp_file.resolve()), ctx_plan.inputs["experiment_path"])
         self.assertEqual("exp-plan", ctx_plan.inputs["experiment_id"])
         self.assertNotIn("experiment_mode", ctx_plan.inputs)
-        self.assertEqual("infra-small", ctx_plan.inputs["infrastructure_id"])
+        self.assertEqual("infra-fixture", ctx_plan.inputs["infrastructure_id"])
         self.assertEqual("infra-rev-1", ctx_plan.inputs["infrastructure_revision"])
         self.assertEqual("PERF-OP-01", ctx_plan.inputs["profile_id"])
         self.assertEqual(78, ctx_plan.inputs["test_case_count"])
@@ -970,7 +970,7 @@ sys.exit(1)
             json.dumps({
                 "schema_version": 1,
                 "experiment": {"id": "from-plan", "mode": "synthetic"},
-                "infrastructure": {"id": "fixture-small", "revision": "fixture-v1"},
+                "infrastructure": {"id": "fixture-infra", "revision": "fixture-v1"},
                 "sources": {"experiment": {"path": str(exp_file)}},
             }),
             encoding="utf-8",
@@ -997,7 +997,7 @@ sys.exit(1)
         self.assertEqual("explicit-id", failure_b["inputs"]["experiment_id"])
         self.assertEqual(str(exp_file), failure_b["inputs"]["experiment_path"])
         self.assertNotIn("experiment_mode", failure_b["inputs"])
-        self.assertEqual("fixture-small", failure_b["inputs"]["infrastructure_id"])
+        self.assertEqual("fixture-infra", failure_b["inputs"]["infrastructure_id"])
         self.assertEqual("fixture-v1", failure_b["inputs"]["infrastructure_revision"])
         self.assertIn("experiment.yaml", failure_b["available_artifacts"])
         self.assertIn("execution-plan.json", failure_b["available_artifacts"])
