@@ -90,8 +90,8 @@ def validate_profile(profile: dict[str, Any]) -> None:
     _string(test["id"], "test.id")
     _string(test["name"], "test.name")
     _string(test["type"], "test.type")
-    if test.get("type") not in {"SMOKE", "LOAD", "PEAK", "STRESS", "SOAK"}:
-        raise ConfigurationError("test.type은 SMOKE, LOAD, PEAK, STRESS, SOAK 중 하나여야 합니다.")
+    if test.get("type") not in {"SMOKE", "STRESS", "SOAK"}:
+        raise ConfigurationError("test.type은 SMOKE, STRESS, SOAK 중 하나여야 합니다.")
     _object(workload, "workload", required=("concurrent_test_runs", "ramp_up_seconds", "duration_seconds",
             "completion_timeout_seconds", "polling_interval_seconds"), optional=("max_iterations_per_vu",))
     _integer(workload["concurrent_test_runs"], "workload.concurrent_test_runs", minimum=1)
