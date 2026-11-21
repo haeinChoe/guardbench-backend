@@ -355,7 +355,7 @@ class FailureArtifactsTest(unittest.TestCase):
                 failure = self._read_failure(sub_dir)
                 self.assertEqual("seed", failure["phase"])
                 self.assertEqual("FIXTURE-OPERATING", failure["inputs"]["profile_id"])
-                self.assertEqual("LOAD", failure["inputs"]["profile_type"])
+                self.assertEqual("SMOKE", failure["inputs"]["profile_type"])
                 self.assertEqual("fixture-two-cases-v1", failure["inputs"]["dataset_id"])
                 self.assertEqual(2, failure["inputs"]["test_case_count"])
                 self.assertEqual("fixture-small-operating", failure["inputs"]["experiment_id"])
@@ -951,7 +951,7 @@ sys.exit(1)
             "experiment": {"id": "exp-plan", "mode": "synthetic"},
             "infrastructure": {"id": "infra-small", "revision": "infra-rev-1"},
             "sources": {"experiment": {"path": str(exp_file)}},
-            "profile": {"test": {"id": "PERF-OP-01", "type": "LOAD"}},
+            "profile": {"test": {"id": "PERF-OP-01", "type": "SMOKE"}},
             "dataset": {"id": "baseline-v1", "test_case_count": 78},
         })
         self.assertEqual(str(exp_file.resolve()), ctx_plan.inputs["experiment_path"])
