@@ -100,9 +100,9 @@ jobs:
             exit 1
           fi
 
-          # Only schema-versioned Runner results are analyzed; schema-less results are not supported.
+          # Only Runner results with schema_version >= 2 are analyzed.
           if ! jq -e 'type == "object" and (.schema_version | type == "number") and .schema_version >= 2' bundle/runner/result.json >/dev/null 2>&1; then
-            echo "Error: ${prefix}result.json is not a schema-versioned (>= 2) Runner result; schema-less results are not analyzed." >&2
+            echo "Error: ${prefix}result.json does not declare schema_version >= 2." >&2
             exit 1
           fi
 

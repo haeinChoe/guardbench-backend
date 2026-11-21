@@ -717,7 +717,7 @@ class FailureArtifactsTest(unittest.TestCase):
         self.assertIn("ERROR: RuntimeError:", err.getvalue())
         self.assertNotIn("secret-value", err.getvalue())
 
-    def test_analysis_bundle_workflow_script_requires_markers_hashes_and_rejects_legacy(self):
+    def test_analysis_bundle_workflow_script_requires_markers_hashes_and_schema_version(self):
         workflow = yaml.safe_load(
             (REPO_ROOT / ".github/workflows/performance-analysis-bundle.yml").read_text(encoding="utf-8")
         )
@@ -836,21 +836,21 @@ sys.exit(1)
         expect_rejected(lambda rp, fp, rid: write_canonical(rp, rid, include_hashes=False),
                         "upload-complete.json is invalid")
 
-        # 3. Schema-less or malformed result.json is no longer analyzed, even with a marker
+        # 3. result.json without schema_version >= 2 is rejected, even with a marker
         for result_doc in ({"run_id": "smoke-run-1"}, {"schema_version": None, "run_id": "smoke-run-1"},
                            {"schema_version": 1, "run_id": "smoke-run-1"}):
             with self.subTest(result_doc=result_doc):
                 expect_rejected(lambda rp, fp, rid, doc=result_doc: write_canonical(rp, rid, result_doc=doc),
-                                "schema-less results are not analyzed")
+                                "does not declare schema_version >= 2")
 
-        # 4. Historical schema-less layout (4 files, no inputs or marker) -> rejected as incomplete
-        def setup_legacy(rp: Path, fp: Path, rid: str):
+        # 4. Result files without run inputs or marker -> rejected as incomplete
+        def setup_without_inputs(rp: Path, fp: Path, rid: str):
             rp.mkdir(parents=True, exist_ok=True)
             (rp / "result.json").write_text(json.dumps({"run_id": rid}), encoding="utf-8")
             for name in ("report.md", "k6-summary.json", "aws-metrics.json"):
                 (rp / name).write_text("{}", encoding="utf-8")
 
-        expect_rejected(setup_legacy, "missing or empty canonical Runner files")
+        expect_rejected(setup_without_inputs, "missing or empty canonical Runner files")
 
         # 5. Required run inputs missing from S3 or from the marker declaration -> rejected
         for name in ("experiment.yaml", "execution-plan.json"):
