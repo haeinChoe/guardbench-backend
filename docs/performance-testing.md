@@ -108,10 +108,10 @@ Dataset은 무엇을 실행할지, Profile은 얼마나 실행할지를 소유�
 | 구분 | 책임 | 예시 |
 | --- | --- | --- |
 | Dataset | TestSuite/TestCase 내용과 재현 가능한 TestCase 수 | `baseline-v1`, 78 TestCases |
-| Profile | 동시 TestRun 수, ramp-up, duration, test type, acceptance criteria | `smoke`, `SMOKE` |
+| Profile | 동시 TestRun 수, ramp-up/duration 또는 stages, test type, acceptance criteria | `smoke`, `SMOKE` |
 
 `performance/datasets/baseline-v1.yaml`은 기존 데모용 78건 import fixture를 immutable
-source로 고정한다. 이 Dataset은 classifier 정확도 benchmark가 아니라 반복 가능한 performance
+source로 고정한다. 별도 대규모 실행용 `performance/datasets/large-suite-491-v1.yaml`(491 TestCases, immutable) 파일도 함께 관리한다. 이 Dataset은 classifier 정확도 benchmark가 아니라 반복 가능한 performance
 workload다. 기준으로 사용한 Dataset은 조용히 수정하지 않는다. TestCase를 추가하거나
 생성 규칙을 바꾸려면 `baseline-v2` 또는 `perf-medium-v1`처럼 새 버전을 만들고 metadata에
 생성 방법을 남긴다. `500 TestCases`는 Dataset 크기이며 측정 대상 인프라 구성 수준과 별개의 축이다.
@@ -203,16 +203,16 @@ guardbench:
 latency, queue 등의 시계열을 별도로 보존한다. `report.md`의 Application/Infrastructure
 revision과 snapshot의 revision은 `APP_REVISION`, `INFRA_REVISION` 환경변수로 주입한다.
 
-Runner는 실행 전에 `PERF_EXPECTED_WORK_ITEMS_CONCURRENCY`를 active ECS Task Definition의
+manifest 없는 기존 실행 경로에서 Runner는 실행 전에 `PERF_EXPECTED_WORK_ITEMS_CONCURRENCY`를 active ECS Task Definition의
 `GUARDBENCH_WORKER_WORK_ITEMS_CONCURRENCY`와 비교한다. 또한
 `PERF_EXPECTED_ECS_TASK_COUNT`를 Performance Service의 `desiredCount`와 snapshot 시점의
 `runningCount` 모두와 비교한다. 하나라도 다르면 Dataset seed와 k6 실행을 시작하지 않고
-명확한 preflight 오류로 종료한다.
+명확한 preflight 오류로 종료한다. ADR 0016의 manifest 경로는 `infrastructure.expected`로 Worker와 선택적 API를 분리 대조한다.
 
-실제 WorkItem concurrency는 `result.json.infrastructure_capacity.ecs.work_items_concurrency`에
+실제 WorkItem concurrency는 기존 경로의 `result.json.infrastructure_capacity.ecs.work_items_concurrency`(manifest 경로는 `ecs.worker.work_items_concurrency`)에
 기록한다. `result.json.experiment`는
 `(work_items_concurrency, concurrent_test_runs, ecs_task_count)` 튜플을 명시하며,
-여기서 `ecs_task_count`는 preflight를 통과한 Service의 configured `desiredCount`다.
+여기서 `ecs_task_count`는 preflight를 통과한 Worker(기존 경로는 단일 Service)의 configured `desiredCount`다.
 
 ## Spot Runner image와 결과 보존
 
@@ -304,7 +304,7 @@ SageMaker endpoint의 실제 configured capacity를 조회한다. 이 조회에 
 identifier가 없거나 AWS 응답이 불완전하거나 조회가 실패하면 `unknown`으로 성공 처리하지
 않고 Runner를 중단한다. 따라서 저장된 snapshot은 다음 값을 포함한다.
 
-- ECS: cluster/service identifier, desired count, running task count, task CPU/memory
+- ECS: cluster/service identifier, desired count, running task count, task CPU/memory (manifest 경로는 `ecs.worker`와 선택적 `ecs.api`로 구분)
 - RDS: DB instance identifier/class
 - SageMaker: endpoint/production variant, instance type, desired/current instance count
 
@@ -317,7 +317,7 @@ DB lifecycle과 migration은 배포 환경과 Backend application이 소유한�
 기존 reset/migration 환경변수는 제거되었으므로 bootstrap 호출에서도 제거해야 한다
 ([IaC #50](https://github.com/GuardBench/guardbench-iac/issues/50)).
 
-매 실행마다 `baseline-v1`으로 신규 TestSuite를 만들고 seed 결과의 실제 `testSuiteId`를 k6에
+매 실행마다 선택한 Dataset(기본값 `baseline-v1`)으로 신규 TestSuite를 만들고 seed 결과의 실제 `testSuiteId`를 k6에
 전달한다. 결과 진단은 현재 Suite와 실행 시간 범위로 제한한다. RDS는 capacity와 metric
 관측 대상으로 유지한다. 실제 실행에는 `APP_REVISION`, `INFRA_REVISION`, `PERF_BASE_URL`과
 SQS CloudWatch QueueName 설정이 필요하다.
