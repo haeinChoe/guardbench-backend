@@ -206,7 +206,7 @@ metadata에 한정된다. DB migration이나 인프라 자원 변경은 없다.
 
 - manifest schema/참조/finite 수치/중복 입력을 검증하고 dry-run에서 외부 호출이 없음을 검사한다.
 - API/Worker/SageMaker/RDS 차이와 미완료 상태에서 seed/workload가 차단되는지 검사한다.
-- 운영/스트레스의 선언된 k6 stages와 tuple 의미를 검사한다.
+- 선택한 테스트 유형의 선언된 k6 stages와 tuple 의미를 검사한다.
 - 결과의 입력 출처와 strict complete/partial artifact 처리를 검사한다.
 - Runner와 k6 연결, 정상·불일치·중간 오류, 프로세스 정리를 검증한다.
   테스트 대역을 사용하는 검증과 실환경 통합 검증의 결과를 구분한다.
