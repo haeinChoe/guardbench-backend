@@ -4,7 +4,7 @@
 
 1. **Dataset / Dataset Size**: 한 TestRun이 처리할 TestCase 집합과 개수다. 기본 Dataset은 `baseline-v1` 78건이고 별도 `large-suite-491-v1` 491건 파일도 있다. 두 Dataset의 내용·버전은 고정하며, `SMALL/MEDIUM/LARGE`의 경계값은 아직 정하지 않는다.
 2. **Test Type**: 실험 목적이다. 사용할 유형은 `SMOKE`·`STRESS`·`SOAK`다. 현재 Runner가 허용하는 다섯 타입과 기존 `LOAD` 파일의 전환은 별도 구현 범위다.
-3. **Workload**: 시스템에 가하는 부하 값이다. Profile의 `concurrent_test_runs`, `ramp_up_seconds`, `duration_seconds`, `max_iterations_per_vu`, timeout/polling 값이 여기에 속한다.
+3. **Workload**: 시스템에 가하는 부하 값이다. Profile의 `concurrent_test_runs`, `ramp_up_seconds`/`duration_seconds` 또는 단계형 `stages`, `max_iterations_per_vu`, timeout/polling 값이 여기에 속한다.
 4. **Infrastructure Capacity**: ECS task 수, CPU/memory, RDS 사양, SageMaker endpoint capacity처럼 시스템이 공급하는 configured resource와 dependency 상태다. Performance Profile이 소유하지 않고 Terraform/배포 설정이 소유한다.
 
 따라서 Profile은 **Test Type + Workload + acceptance criteria + Application Target**을 정의한다. Dataset은 `performance/datasets/`에서 별도로 선택하고, Infrastructure Capacity는 배포 입력과 Infrastructure revision으로 별도 추적한다.

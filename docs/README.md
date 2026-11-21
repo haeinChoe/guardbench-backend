@@ -34,7 +34,7 @@
 | 도메인 | [핵심 모델](domain/core-model.md) | APPROVED | Backend | 2026-09-01 | [도메인 모델 정의](https://app.notion.com/p/3c0eeed6b62d81b48c03ed6034440936) |
 | 도메인 | [평가 계약](domain/evaluation-contract.md) | APPROVED | Backend | 2026-09-01 | [MVP 평가 계약](https://app.notion.com/p/3c3eeed6b62d8120a57eebaa13b6ed27) |
 | API | [API 안내](api/README.md) · [OpenAPI](api/openapi.yaml) | APPROVED | Backend | 2026-09-01 | [API 명세서](https://app.notion.com/p/3c0eeed6b62d805dac0be8db487b1359) |
-| 성능 테스트 | [성능 테스트 운영](performance-testing.md) | APPROVED | Backend | 2026-09-01 | 없음 |
+| 성능 테스트 | [성능 테스트 운영](performance-testing.md) | APPROVED | Backend | 2026-11-21 | 없음 |
 | 아키텍처 | [시스템 개요](architecture/system-overview.md) | APPROVED | Backend | 2026-09-01 | [도메인 모델 정의](https://app.notion.com/p/3c0eeed6b62d81b48c03ed6034440936) |
 | 아키텍처 | [인프라](architecture/infrastructure.md) | APPROVED | Infra | 2026-08-27 | [인프라 구성 설계](https://app.notion.com/p/3c0eeed6b62d81269f60e1c69fbf9fcc) |
 | 아키텍처 | [TestRun Persistence 구현 인덱스](architecture/testrun-persistence.md) | APPROVED | Backend | 2026-09-04 | 없음 |

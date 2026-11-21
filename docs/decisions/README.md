@@ -2,7 +2,7 @@
 
 > Status: APPROVED
 > Owner: Team
-> Last reviewed: 2026-09-04
+> Last reviewed: 2026-11-21
 > Canonical source: GitHub
 > Origin: 없음
 
@@ -25,6 +25,7 @@
 | Context 간 Port, Integration Adapter, 로컬 ID·VO와 Java 타입 격리 | [ADR 0006](0006-independent-domain-contract-boundaries.md) | Aggregate 저장 경계는 [ADR 0001](0001-domain-type-ownership-and-aggregate-boundaries.md)과 [ADR 0003](0003-result-aggregate-and-write-port-boundaries.md), 최종화는 [ADR 0004](0004-testrun-finalization-atomicity.md) |
 | Worker 선점, 동시 실행, 잠금/CAS, retry·timeout | [ADR 0005](0005-async-test-run-execution-contract.md), [ADR 0006](0006-independent-domain-contract-boundaries.md) | 결과 저장 경계는 [ADR 0003](0003-result-aggregate-and-write-port-boundaries.md), 최종화 불변식은 [ADR 0004](0004-testrun-finalization-atomicity.md), 물리 스키마는 [ADR 0002](0002-postgresql-persistence-contract.md), claim·Outbox 물리 저장은 [ADR 0008](0008-async-testrun-persistence-contract.md) |
 | SQS 통합 테스트 에뮬레이터, 테스트용 visibility·lease 시간 설정 | [ADR 0015](0015-floci-sqs-test-emulator.md) | retry·timeout 계약 자체를 바꾸면 [ADR 0005](0005-async-test-run-execution-contract.md) |
+| 성능 실험 실행 계획, manifest, capacity 대조, 단계형 workload, 실패 artifact | [ADR 0016](0016-performance-experiment-plan.md) | 기존 운영 절차·지표는 [성능 테스트 운영](../performance-testing.md)을 추가한다. |
 
 ## 성능 테스트 실행 계약
 
@@ -54,6 +55,8 @@ ADR 0010  TestRun 단일 HTTP Target 실행 모델
 ADR 0014  HTTP 표준 오류 응답을 GuardBench Envelope로 통일
 
 ADR 0015  SQS 통합 테스트 에뮬레이터를 Floci로 교체
+
+ADR 0016  인프라 구성과 시나리오를 분리한 성능 실험 실행 계획
 
 ADR 0006  Context 간 Java 타입 공유와 직접 의존을 제한
 ```
