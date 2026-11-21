@@ -14,7 +14,7 @@
 
 성능 실험은 하나의 인프라 구성을 고정하고 선택한 부하 시나리오를 실행한다.
 small 등의 구성 이름은 측정 대상 서비스의 자원 규모를 가리킨다. 인프라 구성과
-부하 시나리오를 분리해야 동일한 용량에서 운영·스트레스 패턴을 비교할 수 있다.
+부하 시나리오를 분리해 동일한 용량에서 선택한 테스트 유형의 부하 패턴을 비교한다.
 
 현재 실행 조건은 Profile, Dataset과 여러 환경변수에 분산되어 있다. 이 조합을
 실행 전에 검증하고 결과까지 보존할 단일 입력이 필요하다. 인프라 capacity는
@@ -155,10 +155,16 @@ polling_interval_seconds: 0.1
 같아야 한다. 기존 단일 target 경로에서는 종전 의미와 같다. 실험 튜플의 C는 관측된
 실사용자 수가 아니라 이 **최대 configured VU target**이다. 전체 부하 곡선과 그 의미를
 결과에 함께 저장한다. 한 VU는 하나의 비동기 TestRun 완료를 기다리는 현재 모델을 유지한다.
-운영과 스트레스는 이름별 분기 대신 같은 schema의 다른 설정이다. staged 경로의
-gracefulRampDown은 completion timeout으로 두어 하강 단계에서도 진행 중 iteration의
-완료 polling이 잘리지 않게 한다. interrupted iteration이 남으면 별도 기록하고 유효한
-완료 측정으로 판정하지 않는다. 실제 종료 시간은 이 grace 때문에 선언된 부하 구간보다 길 수 있다.
+각 테스트 유형은 이름별 분기 대신 같은 schema의 다른 설정으로 표현한다. 단계형 경로에서
+`gracefulRampDown`은 VU 수를 줄일 때 종료할 VU의 진행 중 iteration을 기다리는 최대 시간이고,
+`gracefulStop`은 시나리오 전체 종료 시 진행 중 iteration을 기다리는 최대 시간이다.
+단계형 `gracefulRampDown`과 공통 `gracefulStop`은
+`completion_timeout_seconds + max(1, ceil(polling_interval_seconds))`초로 설정한다.
+추가 여유는 완료 timeout 직후 실패 판정과 지표 기록을 마칠 시간을 주기 위한 것이다.
+유예 시간 내 완료를 보장하지 않으며, 시간이 만료되면 k6가 진행 중 iteration을 강제 중단할 수 있다.
+interrupted iteration이 남으면 별도 기록하고 단계형 경로에서 유효한 완료 측정으로 판정하지 않는다.
+기존 `ramp_up_seconds`/`duration_seconds` 경로의 `gracefulRampDown`은 `0s`를 유지한다.
+실제 종료 시간은 이 grace 때문에 선언된 부하 구간보다 길 수 있다.
 
 기존 acceptance schema와 k6 exit 99의 측정 FAIL 의미를 유지한다. 검증 fixture에는
 각 시나리오의 사전 고정된 기준을 사용한다. 운영 오류율과 한계/회복 판정의 실제 수치는
