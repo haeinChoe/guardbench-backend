@@ -6,9 +6,8 @@
 
 ## 목적과 원칙
 
-GuardBench 성능 실험은 하나의 인프라 구성을 고정하고 선택한 Profile의 부하를 실행한다.
-동일한 workload를 반복해 Baseline과 인프라 변경 전후를 비교하며, 현재 ECS 설정값 자체를
-성능 목표의 근거로 삼지 않는다. 실행 입력·결과 계약은 [ADR 0016](https://github.com/haeinChoe/guardbench-backend/blob/dev/docs/decisions/0016-performance-experiment-plan.md)을 따른다.
+GuardBench 성능 테스트는 현재 ECS 설정값을 목표로 삼지 않고, Capacity Target을 먼저 정한
+뒤 동일한 workload를 반복 실행해 Baseline과 인프라 변경 전후를 비교하기 위한 도구다.
 TestRun은 `POST /api/v1/test-runs`의 `202 Accepted`에서 끝나지 않고 SQS/Worker를 거쳐
 `FINISHED`가 되므로 HTTP latency와 비동기 완료 시간을 분리해서 측정한다.
 
@@ -41,7 +40,7 @@ classifier endpoint/prompt 등은 Backend 배포 설정이 소유한다.
 실험 순서는 다음과 같다.
 
 ```text
-인프라 구성 선택 → Performance Profile → 동일 Dataset 실행 → Baseline
+Capacity Target → Performance Profile → 동일 Dataset 실행 → Baseline
 → 병목 분석 → 인프라 변경 → 동일 workload 재검증
 ```
 
@@ -80,7 +79,7 @@ RDS instance class 단계 변경, RDS sizing 비교, storage/IOPS/connection poo
 동일 Dataset + 동일 Profile/Workload + ECS/SageMaker Capacity 변경
 ```
 
-manifest 없는 기존 실행에서 `PERF_ECS_CLUSTER`와 `PERF_ECS_SERVICE`는 실행 대상 Performance ECS 환경을 가리켜야 한다.
+`PERF_ECS_CLUSTER`와 `PERF_ECS_SERVICE`는 실행 대상 Performance ECS 환경을 가리켜야 한다.
 Runner는 실행 직전에 해당 Service가 사용하는 active Task Definition과 Service 상태를 AWS에서
 읽어 `result.json.infrastructure_capacity.ecs`에 다음 값을 저장한다.
 
@@ -90,10 +89,6 @@ Runner는 실행 직전에 해당 Service가 사용하는 active Task Definition
 | Performance 전용 memory 입력이 반영된 Task Definition | `ecs.task_memory` |
 | Performance Service의 configured desired count | `ecs.desired_count` |
 | snapshot 시점의 실제 running task 수 | `ecs.running_task_count` |
-
-ADR 0016의 manifest 경로는 `infrastructure.expected`의 자원 식별자로 조회하며 ECS Worker와
-선택적 API snapshot을 `ecs.worker`·`ecs.api`로 구분한다. 위 표의 단일 `ecs` 구조와 환경변수는
-기존 실행 경로의 계약이다. manifest capacity 대조 구현은 #22에서 다룬다.
 
 Snapshot은 Terraform 입력값 자체가 아니라 AWS에 적용된 실제 구성값을 기록한다. 그러므로
 Terraform apply와 Performance Service rollout이 끝난 뒤 실행해야 하며, snapshot의 CPU/memory가
@@ -114,18 +109,18 @@ Dataset은 무엇을 실행할지, Profile은 얼마나 실행할지를 소유�
 source로 고정한다. 이 Dataset은 classifier 정확도 benchmark가 아니라 반복 가능한 performance
 workload다. 기준으로 사용한 Dataset은 조용히 수정하지 않는다. TestCase를 추가하거나
 생성 규칙을 바꾸려면 `baseline-v2` 또는 `perf-medium-v1`처럼 새 버전을 만들고 metadata에
-생성 방법을 남긴다. `500 TestCases`는 Dataset 크기이며 측정 대상 인프라 구성 수준과 별개의 축이다.
+생성 방법을 남긴다. `500 TestCases`는 Dataset 크기이며 `TARGET` Capacity와 같은 뜻이 아니다.
 
-사용할 테스트 유형과 목적은 ADR 0016에 따라 다음과 같다.
+Profile type은 다음 의미를 갖는다.
 
-- `SMOKE`: 적은 부하로 TestRun 접수·비동기 처리·완료·결과 수집 경로 확인
-- `STRESS`: 부하 증가에 따른 처리 한계, 지연, SQS backlog와 실패 양상 확인
-- `SOAK`: 일정한 부하를 장시간 유지하며 메모리·연결·backlog·오류 누적 확인
+- `SMOKE`: 설정과 파이프라인을 빠르게 확인하는 최소 실행
+- `LOAD`: 정해진 평균 부하에서 지속 처리량 확인
+- `PEAK`: 별도로 합의한 peak 동시성 확인
+- `STRESS`: 용량 한계를 찾는 단계적 증가 실험
+- `SOAK`: 장시간 실행에서 backlog, memory, 오류 누적 확인
 
-현재 프로필 파일은 `smoke.yaml`(`SMOKE`)과 `concurrent-10.yaml`(`LOAD`) 두 개다.
-Runner는 `SMOKE`, `LOAD`, `PEAK`, `STRESS`, `SOAK`를 허용하지만 허용 타입이 있다는 사실이
-해당 프로필의 구현 완료를 뜻하지 않는다. 유형별 부하 수치·시간·판정 기준과 프로필 구현,
-기존 `LOAD` 파일·허용 타입의 전환은 #23 범위다. 기존 파일과 타입은 이 문서만으로 제거하지 않는다.
+`smoke.yaml`만 현재 실행 가능한 초기 Profile이다. `target`, `peak`, `stress`, `soak`의
+최종 숫자는 Capacity Target 결정 후 같은 형식으로 추가한다.
 
 ## 책임 경계
 
@@ -323,9 +318,8 @@ CPU·connection·backlog 지표는 해당 조건에서의 관찰 결과로 해�
 
 SageMaker metric은 `EndpointName + VariantName` dimension으로 조회한다. 성능 Baseline에서는
 classifier가 실제 E2E 경로의 일부이므로 ECS·SQS·RDS와 함께 SageMaker datapoint도 있어야
-AWS metric 수집 acceptance가 통과한다. 기존 실행의 리소스 이름은 `performance/metrics/aws.yaml`과
-환경변수에서 해석하고, manifest 경로는 capacity 조회와 동일한 Worker/RDS/SageMaker 식별자를
-CloudWatch dimension에도 사용한다. SQS QueueName/URL은 환경 입력을 유지한다. 설정된 dimension이 비어 있는 metric은 `aws-metrics.json`에 `skipped`로 남긴다.
+AWS metric 수집 acceptance가 통과한다. 리소스 이름은 `performance/metrics/aws.yaml`과
+환경변수에 두며, dimension이 비어 있는 metric은 `aws-metrics.json`에 `skipped`로 남긴다.
 
 `TestRun create 202`는 E2E 성공과 다르다. k6는 `FINISHED`까지 polling하고
 `executionOutcome=COMPLETED`인지 별도로 확인한다. Classifier provider 실패는 임의 ALLOW/BLOCK으로
@@ -355,18 +349,17 @@ Baseline 비교 시 실행 전 preflight를 통과하고 아래 항목을 고정
 이전 Suite/TestRun/Execution/Outbox는 DB에 남는다. 실행별 Suite/time window로 결과를
 분리하며, 누적 DB 크기와 index 상태는 완전히 동일한 조건으로 간주하지 않는다.
 
-`concurrent_test_runs`는 configured VU target이며 단계형 부하에서는 stage target의 최댓값이다.
-한 VU는 TestRun을 접수한 뒤 `FINISHED`까지 polling한다. 이 값은 관측된 실제 동시 Run 수를
-보장하지 않으며 전체 부하 곡선과 함께 해석한다. 현재 `smoke`는
+`concurrent_test_runs`는 단순 POST 동시 요청 수가 아니라 각 VU가 하나의 TestRun을 접수한 뒤
+`FINISHED`까지 polling하는 동안 살아 있는 비동기 TestRun 수에 가깝다. 현재 `smoke`는
 `max_iterations_per_vu: 1`이므로 1 VU가 1건을 완료하고 끝나는 Smoke이며, `duration_seconds`
-동안 지속적으로 새 Run을 생성하는 Profile이 아니다. 반복 부하를 가하는 STRESS/SOAK Profile에서는 이
+동안 지속적으로 새 Run을 생성하는 Profile이 아니다. LOAD/STRESS/SOAK Profile에서는 이
 필드를 0(제한 없음) 또는 적절한 반복 수로 명시해 생성률과 완료 polling traffic을 함께
 검토한다.
 
 ECS/SageMaker Capacity만 바꾸고 Dataset/Profile, Demo AI 조건, RDS/SQS 구성을 유지해야 CPU, memory,
 queue age, completion time의 변화를 원인 후보로 비교할 수 있다. RDS/SQS 지표는 고정된
-의존 인프라에서 발생한 병목 여부를 확인하는 데 사용한다. 유형별 실제 부하 수치와 판정 기준은
-프로필 구현 #23에서 정의한다. Profile의 configured VU target × Dataset TestCase 수 ×
+의존 인프라에서 발생한 병목 여부를 확인하는 데 사용한다. `target`, `peak`, `stress` 숫자는
+Capacity Target 논의가 끝난 뒤 추가한다. Profile의 동시 TestRun 수 × Dataset TestCase 수 ×
 retry 가능성을 실행 전에 확인해 SageMaker Runtime 요청량과 AWS 비용을 검토한다.
 
 ## Runner 전용 수동 image publish (#213)
