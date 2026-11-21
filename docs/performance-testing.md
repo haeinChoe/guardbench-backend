@@ -2,7 +2,7 @@
 
 > Status: APPROVED
 > Owner: Backend
-> Related Issue: #140, #187, #193, #200, #212, #25
+> Related Issue: #140, #187, #193, #200, #212, #24, #25
 
 ## 목적과 원칙
 
@@ -189,11 +189,21 @@ guardbench:
 
 실행 결과는 `performance/results/<run-id>/`에 원본 입력 `experiment.yaml`, `profile.yaml`,
 `dataset.yaml`과 `execution-plan.json`, `k6-summary.json`, `aws-metrics.json`, `result.json`,
-`report.md`로 저장한다. dry-run은 원본 입력 세 개와 `execution-plan.json`만 남긴다. `result.json`의
-`infrastructure_capacity`는 실행 전 AWS API에서 읽은 configured capacity snapshot이며,
-`revisions`와 capture 시각을 함께 보존한다. `aws-metrics.json`은 실행 중 관측한 utilization,
-latency, queue 등의 시계열을 별도로 보존한다. `report.md`의 Application/Infrastructure
-revision과 snapshot의 revision은 `APP_REVISION`, `INFRA_REVISION` 환경변수로 주입한다.
+`report.md`로 저장한다. dry-run은 원본 입력 세 개와 `execution-plan.json`만 남긴다.
+
+`result.json`은 `schema_version: 2`를 유지하며 `execution_plan`(해석된 `experiment.id`,
+`infrastructure.id`·`revision`·`expected`, `profile`, `dataset`, `sources`의 `path` 및 원본 byte
+SHA-256)과 `scenario`(`id`, `type`)를 포함한다. `result.json.infrastructure_capacity`는 실행 전
+AWS API에서 읽은 configured capacity snapshot이며, `revisions`와 capture 시각을 함께 보존한다.
+`aws-metrics.json`은 실행 중 관측한 utilization, latency, queue 등의 시계열을 별도로 보존한다.
+
+`report.md`는 `performance/runner/results.py`가 생성하며 실험 ID, 인프라 구성 ID/정의
+revision(배포 `INFRA_REVISION` 및 `APP_REVISION`과 별도 표기), 시나리오 ID/유형, Dataset ID와
+TestCase 수, `(W,C,T)` 튜플과 `C` 의미(최대 configured VU target; VU 하나가 TestRun 하나 완료를
+기다림), 해석된 workload(`stages`가 있으면 전체 단계 포함), acceptance 기준, manifest 선택값
+(`expected`)과 실행 전 관측 snapshot(`infrastructure_capacity`)을 별도 절로 구분하고, 입력 출처
+(`sources`의 `path`·`sha256`)를 함께 남긴다. 수집되지 않은 metric은 임의의 정상 수치로 채우지 않고
+누락 상태를 그대로 표시한다.
 
 Runner는 실행 전에 manifest의 `infrastructure.expected.ecs.worker.work_items_concurrency`를 Worker
 active Task Definition의 `GUARDBENCH_WORKER_WORK_ITEMS_CONCURRENCY`와 비교하고, `desired_count`를
@@ -202,9 +212,11 @@ Service의 `desiredCount`·`runningCount`와 비교한다. RDS/SageMaker와 선�
 preflight 오류로 종료한다.
 
 실제 WorkItem concurrency는 `result.json.infrastructure_capacity.ecs.worker.work_items_concurrency`에
-기록한다. `result.json.experiment`는
-`(work_items_concurrency, concurrent_test_runs, ecs_task_count)` 튜플을 명시하며,
-여기서 `ecs_task_count`는 preflight를 통과한 Worker의 configured `desiredCount`다.
+기록한다. `result.json.experiment`는 기존과 같이
+`(work_items_concurrency, concurrent_test_runs, ecs_task_count)` 튜플 객체로 유지하며,
+여기서 `ecs_task_count`는 preflight를 통과한 Worker의 configured `desiredCount`이고
+`concurrent_test_runs`는 최대 configured VU target이다. manifest 실험 ID는
+`result.json.execution_plan.experiment.id`에 둔다.
 
 ## Spot Runner image와 결과 보존
 
@@ -246,8 +258,8 @@ s3://<PERFORMANCE_RESULTS_BUCKET>/performance/results/<run-id>/
 
 [ADR 0016](decisions/0016-performance-experiment-plan.md)은 APPROVED/ACCEPTED 계약이며,
 실패 진단과 완료·부분 artifact의 분리, `schema_version: 2`, 완료 표식 경계를 정의한다.
-이 절은 #25의 구현 동작을 설명한다. `experiment.yaml`, `execution-plan.json`과 plan 식별
-metadata는 #21·#24 통합에 사용하는 선택적 artifact이며 핵심 6개 완료 파일의 필수 검증은 유지한다.
+이 절은 #25의 구현 동작을 설명한다. `experiment.yaml`, `execution-plan.json`과 `result.json`의
+`execution_plan`·`scenario` 식별 metadata는 모든 실행에서 생성·보존하는 필수 요소다.
 
 Runner는 성능 기준 미달(`FAIL`)과 실행 도구 오류(`ERROR`)를 구분한다.
 
@@ -256,7 +268,7 @@ Runner는 성능 기준 미달(`FAIL`)과 실행 도구 오류(`ERROR`)를 구�
   - `1`: 측정이 완료된 정상 실행 결과의 acceptance `FAIL` (k6 threshold breach `exit 99` 포함)
   - `2`: Runner 실행 오류 (`ConfigurationError`, `RunnerError`, `ApiError` 및 예기치 않은 실행 예외)
 - **`result.json` `schema_version: 2` 및 `upload-complete.json` 완료 표식**:
-  - 새로 생성하는 `result.json`은 기존 필드를 모두 유지하면서 `schema_version: 2`를 포함한다.
+  - 새로 생성하는 `result.json`은 `schema_version: 2`와 기존 필드를 유지하면서 `execution_plan`, `scenario` 식별 정보를 포함한다.
   - 완료 결과 업로드(`upload_result_directory`)는 8개 canonical 파일(실행 입력 `experiment.yaml`, `profile.yaml`, `dataset.yaml`, `execution-plan.json`과 `k6-summary.json`, `aws-metrics.json`, `result.json`, `report.md`)이 모두 존재하고 `failure.json`이 없을 때만 `s3://<PERFORMANCE_RESULTS_BUCKET>/performance/results/<run-id>/`에 기존 PutObject/upload 호출만으로 업로드한다(추가 S3 읽기/복사 IAM 권한 불필요). 모든 실행이 manifest로 시작하므로 실행 입력 파일도 선택이 아닌 필수다.
   - 실제 업로드된 파일 목록이 모두 성공한 뒤에만 완료 표식 `upload-complete.json`(`schema_version: 1`, `status: "COMPLETE"`, `run_id`, `completed_at`, `files`, `file_sha256`, optional `result_schema_version`)을 **마지막**으로 게시한다. 중간 업로드가 실패하면 표식은 게시되지 않으며, 측정 이후 `upload` 단계 실패 시 로컬 `result.json`(PASS/FAIL)과 `report.md`는 그대로 보존하고 로컬 `failure.json` (`phase: "upload"`)을 남긴다(실패 prefix 재업로드는 시도하지 않음).
 - **`failure.json` (`schema_version: 1`) 및 조기 설정 오류 보존**:
@@ -273,8 +285,9 @@ s3://<PERFORMANCE_RESULTS_BUCKET>/performance/failures/<run-id>/
 
 - **분석 workflow(`performance-analysis-bundle.yml`)**:
   - `performance/results/<run-id>/`에 `failure.json`이 존재하거나 canonical 파일이 누락되면 CloudWatch Logs 번들링을 진행하지 않고 실패로 종료한다.
-  - 모든 결과에 대해 `result.json`의 `schema_version >= 2`, `upload-complete.json` 완료 표식(`status: "COMPLETE"`, `run_id` 일치, 8개 canonical 파일의 `files[]` 선언과 존재), 그리고 선언된 모든 파일의 `file_sha256` 일치를 검증한다. `file_sha256`가 없는 표식도 거부한다.
+  - 모든 결과에 대해 `result.json`의 `schema_version >= 2`, 필수 실험 식별 필드(`.execution_plan.experiment.id`, `.execution_plan.infrastructure.id`/`.revision`, `.scenario.id`/`.type`), `upload-complete.json` 완료 표식(`status: "COMPLETE"`, `run_id` 일치, 8개 canonical 파일의 `files[]` 선언과 존재), 그리고 선언된 모든 파일의 `file_sha256` 일치를 검증한다. `file_sha256`가 없는 표식도 거부한다.
   - `result.json`의 `schema_version`이 없거나 2 미만이면 번들링하지 않고 실패로 종료한다.
+  - 번들링에 성공하면 Step Summary와 `bundle/bundle-metadata.json`에 `experiment_id`, `infrastructure_id`, `infrastructure_revision`, `scenario_id`, `scenario_type`을 함께 기록한다.
   - 불완전하거나 실패한 실행에서는 `performance/failures/<run-id>/failure.json` 존재 여부를 확인해 실패 `phase`, `error.type`과 진단 경로를 안내한다.
 
 로컬 API에 대한 입력 검증은 `--dry-run`으로 수행할 수 있다. 실제 비동기 Smoke 실행은
