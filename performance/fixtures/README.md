@@ -3,14 +3,14 @@
 These files validate the Runner's experiment manifest v1 interface
 ([ADR 0016](../../docs/decisions/0016-performance-experiment-plan.md), APPROVED/ACCEPTED).
 Resource names, CPU/memory, counts, workload and acceptance values are mock inputs.
-They do not define an AWS small preset or operating goals.
+They do not define a real infrastructure preset or operating goals.
 
 Run from the repository root with Python dependencies from
 `performance/requirements.txt` installed:
 
 ```bash
 python3 -m performance.runner.cli \
-  --experiment performance/fixtures/experiments/mock-small-operating.yaml \
+  --experiment performance/fixtures/experiments/smoke.yaml \
   --dry-run \
   --result-dir /tmp/guardbench-fixture-plan
 ```

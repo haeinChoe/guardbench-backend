@@ -107,7 +107,7 @@ class PerformanceExecutionTest(unittest.TestCase):
         result = json.loads((self.result_dir / "result.json").read_text())
         self.assertEqual("fixture-two-cases-v1", result["dataset"]["id"])
         self.assertEqual(2, result["dataset"]["test_case_count"])
-        self.assertEqual("FIXTURE-OPERATING", result["profile"]["test"]["id"])
+        self.assertEqual("FIXTURE-SMOKE", result["profile"]["test"]["id"])
         self.assertEqual(2, len(self.api.create_suite.call_args.args[0]["testCases"]))
 
     def test_staged_workload_preserves_curve_acceptance_and_iteration_validity_in_report(self):

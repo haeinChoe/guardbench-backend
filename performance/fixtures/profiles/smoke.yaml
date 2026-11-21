@@ -1,7 +1,7 @@
 # Synthetic functional validation only; not real performance acceptance targets.
 test:
-  id: FIXTURE-OPERATING
-  name: mock operating workload
+  id: FIXTURE-SMOKE
+  name: synthetic smoke validation
   type: SMOKE
 workload:
   concurrent_test_runs: 2
