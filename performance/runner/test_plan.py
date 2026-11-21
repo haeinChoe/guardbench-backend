@@ -27,9 +27,9 @@ class ExecutionPlanTest(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.directory = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         shutil.copytree(FIXTURES, self.directory / "fixtures")
-        self.manifest_path = self.directory / "fixtures/experiments/mock-small-operating.yaml"
-        self.profile_path = self.directory / "fixtures/profiles/mock-operating.yaml"
-        self.dataset_path = self.directory / "fixtures/datasets/mock-two-cases.yaml"
+        self.manifest_path = self.directory / "fixtures/experiments/smoke.yaml"
+        self.profile_path = self.directory / "fixtures/profiles/smoke.yaml"
+        self.dataset_path = self.directory / "fixtures/datasets/two-cases.yaml"
         self.manifest = yaml.safe_load(self.manifest_path.read_text())
         self.profile = yaml.safe_load(self.profile_path.read_text())
 
@@ -41,7 +41,7 @@ class ExecutionPlanTest(unittest.TestCase):
             resolved = load_execution_plan(self.manifest_path)
         plan = resolved.to_dict()
         self.assertEqual({"schema_version", "experiment", "infrastructure", "profile", "dataset", "sources"}, set(plan))
-        self.assertEqual({"id": "fixture-small-operating"}, plan["experiment"])
+        self.assertEqual({"id": "fixture-smoke"}, plan["experiment"])
         self.assertEqual("fixture-v1", plan["infrastructure"]["revision"])
         self.assertEqual(self.profile, plan["profile"])
         self.assertEqual({"id": "fixture-two-cases-v1", "test_case_count": 2}, plan["dataset"])
@@ -93,7 +93,7 @@ class ExecutionPlanTest(unittest.TestCase):
         ]
         for keys, value in mutations:
             with self.subTest(keys=keys, value=value):
-                self.manifest = yaml.safe_load((FIXTURES / "experiments/mock-small-operating.yaml").read_text())
+                self.manifest = yaml.safe_load((FIXTURES / "experiments/smoke.yaml").read_text())
                 target = self.manifest
                 for key in keys[:-1]:
                     target = target[key]
@@ -105,7 +105,7 @@ class ExecutionPlanTest(unittest.TestCase):
                      ("infrastructure", "expected", "ecs"), ("infrastructure", "expected", "ecs", "worker"),
                      ("infrastructure", "expected", "rds"), ("infrastructure", "expected", "sagemaker")):
             with self.subTest(unknown_at=keys):
-                self.manifest = yaml.safe_load((FIXTURES / "experiments/mock-small-operating.yaml").read_text())
+                self.manifest = yaml.safe_load((FIXTURES / "experiments/smoke.yaml").read_text())
                 target = self.manifest
                 for key in keys:
                     target = target[key]

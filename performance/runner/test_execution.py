@@ -75,8 +75,8 @@ class PerformanceExecutionTest(unittest.TestCase):
         fixtures = Path(__file__).resolve().parents[1] / "fixtures"
         profile_path = self.result_dir.parent / "profile.yaml"
         dataset_path = self.result_dir.parent / "dataset.yaml"
-        shutil.copyfile(fixtures / "profiles/mock-operating.yaml", profile_path)
-        shutil.copyfile(fixtures / "datasets/mock-two-cases.yaml", dataset_path)
+        shutil.copyfile(fixtures / "profiles/smoke.yaml", profile_path)
+        shutil.copyfile(fixtures / "datasets/two-cases.yaml", dataset_path)
         self.args.profile = str(profile_path)
         self.args.dataset = str(dataset_path)
 
@@ -91,7 +91,7 @@ class PerformanceExecutionTest(unittest.TestCase):
         result = json.loads((self.result_dir / "result.json").read_text())
         self.assertEqual("fixture-two-cases-v1", result["dataset"]["id"])
         self.assertEqual(2, result["dataset"]["test_case_count"])
-        self.assertEqual("FIXTURE-OPERATING", result["profile"]["test"]["id"])
+        self.assertEqual("FIXTURE-SMOKE", result["profile"]["test"]["id"])
         self.assertEqual(2, len(self.api.create_suite.call_args.args[0]["testCases"]))
 
     def test_active_run_blocks_seed_and_workload(self):
