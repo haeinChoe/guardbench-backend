@@ -156,18 +156,6 @@ def validate_profile(profile: dict[str, Any]) -> None:
     _number(completion.get("dlq_messages"), "acceptance.completion.dlq_messages")
 
 
-def load_profile(path: Path) -> dict[str, Any]:
-    profile = load_yaml(path)
-    validate_profile(profile)
-    return profile
-
-
-def load_dataset(path: Path) -> dict[str, Any]:
-    dataset = load_yaml(path)
-    validate_dataset(dataset)
-    return dataset
-
-
 def validate_dataset(dataset: dict[str, Any]) -> None:
     source = dataset.get("source")
     _string(dataset.get("id"), "dataset.id")

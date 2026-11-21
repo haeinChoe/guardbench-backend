@@ -9,13 +9,12 @@ command -v k6 >/dev/null
 python3.11 --version
 k6 version
 test -x "$root/bin/run-performance"
-test -f "$root/performance/profiles/smoke.yaml"
+test -f "$root/performance/fixtures/experiments/mock-small-operating.yaml"
 test -f "$root/performance/datasets/baseline-v1.yaml"
 test -f "$root/http/testsets/notion-testset-import.http"
 cd "$root"
 python3.11 -c 'import performance.runner'
-PERF_TARGET_URL=https://artifact.verify.invalid/v1/chat/completions \
-PERF_TARGET_MODEL=artifact-verify-model \
-PERF_TARGET_REVISION=artifact-verify \
-  "$root/bin/run-performance" --dry-run --profile "$root/performance/profiles/smoke.yaml" --result-dir "$(mktemp -d)/dry-run" >/dev/null
+"$root/bin/run-performance" --dry-run \
+  --experiment "$root/performance/fixtures/experiments/mock-small-operating.yaml" \
+  --result-dir "$(mktemp -d)/dry-run" >/dev/null
 echo "GuardBench Performance Runner container verification passed."

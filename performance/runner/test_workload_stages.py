@@ -17,7 +17,7 @@ import yaml
 
 from performance.runner.acceptance import evaluate
 from performance.runner.cli import _k6_environment, run_k6
-from performance.runner.config import ConfigurationError, load_profile, validate_profile
+from performance.runner.config import ConfigurationError, load_yaml, validate_profile
 from performance.runner.plan import load_execution_plan
 from performance.runner.test_runner import acceptance_profile, k6_profile, passing_summary
 
@@ -27,7 +27,9 @@ K6 = shutil.which(os.environ.get("K6_BIN", "k6"))
 
 
 def staged_profile(name="staged-operating"):
-    return load_profile(ROOT / f"fixtures/profiles/{name}.yaml")
+    profile = load_yaml(ROOT / f"fixtures/profiles/{name}.yaml")
+    validate_profile(profile)
+    return profile
 
 
 def staged_passing_summary():
