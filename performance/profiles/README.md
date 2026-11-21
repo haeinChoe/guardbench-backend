@@ -109,10 +109,10 @@ polling을 반영한 뒤에만 completed를 증가시킨다(TestRun 성공 여�
 `ramp_up_seconds`/`duration_seconds` 기반 승인 Profile에는 이 새 판정을 강제하지 않으며,
 기존 보관 artifact도 다시 작성하지 않는다.
 
-ADR 0016이 선택한 테스트 유형은 `SMOKE`·`STRESS`·`SOAK`다. 현재 이 변경은 단계형
+ADR 0016이 선택한 테스트 유형은 `SMOKE`·`STRESS`·`SOAK`다. 현재 PR #31은 단계형
 실행 기반과 `LOAD` 운영·`STRESS` 검증 fixture를 제공한다. 세 유형별 실제 프로필의
-부하 수치·시간·판정 기준, SOAK 프로필 구현과 기존 유형의 전환 처리는 완료된 것으로
-간주하지 않으며 #23의 후속 구현 범위다.
+부하 수치·시간·판정 기준, `SOAK` 프로필 구현과 기존 `LOAD` 프로필·허용 타입의 전환
+처리는 완료된 것으로 간주하지 않으며 #23 후속 PR 범위다.
 
 검증용 곡선은 [`staged-operating.yaml`](../fixtures/profiles/staged-operating.yaml)과
 [`staged-stress.yaml`](../fixtures/profiles/staged-stress.yaml)에 있다. 두 fixture는 동일 schema의
@@ -125,6 +125,6 @@ python3 -m unittest performance.runner.test_workload_stages -v
 ```
 
 k6가 설치되어 있으면 위 테스트는 실제 k6 inspect와 임시 모의 HTTP API를 실행한다.
-정상 하강에서 polling 완료와 강제 중단에서 acceptance FAIL을 확인하고 서버/프로세스를 정리한다.
+정상 하강에서 polling 완료, 하강 구간 timeout 시 중단 오집계 방지(`interrupted == 0`·`completion.failure_rate` 집계), 강제 중단에서 acceptance FAIL을 확인하고 서버/프로세스를 정리한다.
 k6가 없으면 실제 실행 테스트는 명시적으로 skip되며 Python schema/판정 테스트만 동작한다.
 실환경 성능 검증은 별도다. 최종 Runner/AWS 대역 연결은 후속 #26 검증에서 다룬다.
