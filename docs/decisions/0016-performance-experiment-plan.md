@@ -14,7 +14,7 @@
 ## Context
 
 성능 실험은 하나의 인프라 구성을 고정하고 선택한 부하 시나리오를 실행한다.
-small 등의 구성 이름은 측정 대상 서비스의 자원 규모를 가리킨다. 인프라 구성과
+인프라 구성 이름은 측정 대상 서비스의 자원 규모를 가리킨다. 인프라 구성과
 부하 시나리오를 분리해 동일한 용량에서 선택한 테스트 유형의 부하 패턴을 비교한다.
 
 현재 실행 조건은 Profile, Dataset과 여러 환경변수에 분산되어 있다. 이 조합을
@@ -65,9 +65,9 @@ Runner 입력 검증은 이 세 유형만 허용하며 `LOAD`, `PEAK` 등 다른
 
 ```yaml
 schema_version: 1
-id: fixture-small-operating
+id: fixture-smoke
 infrastructure:
-  id: fixture-small
+  id: fixture-infra
   revision: fixture-v1
   expected:
     ecs:
@@ -92,11 +92,11 @@ infrastructure:
       production_variant_name: AllTraffic
       instance_type: fixture-instance-type
       desired_instance_count: 1
-profile: ../profiles/operating.yaml
-dataset: ../datasets/local.yaml
+profile: ../profiles/smoke.yaml
+dataset: ../datasets/two-cases.yaml
 ```
 
-예시의 값은 검증 fixture이며 실제 small preset이나 운영 목표가 아니다. 필수 항목은
+예시의 값은 검증 fixture이며 실제 인프라 구성값이나 운영 목표가 아니다. 필수 항목은
 schema_version=1, 비어 있지 않은 id/revision, profile/dataset 참조,
 infrastructure.expected.ecs.worker의 위 여섯 필드와 expected.rds/sagemaker다. 기존 측정 계약이
 RDS·SageMaker 관측을 요구하므로 이 자원 입력도 필수로 받는다. expected.ecs.api는
@@ -218,4 +218,9 @@ metadata에 한정된다. DB migration이나 인프라 자원 변경은 없다.
 이 결정으로 #21에서 처리한다. 소비처 조사 결과 `LOAD` 소비처는 `performance/profiles/concurrent-10.yaml`과
 검증 fixture `performance/fixtures/profiles/mock-operating.yaml`뿐이었고 `PEAK` 소비처는 없었다.
 `concurrent-10.yaml`은 참조처가 없어 제거하고, fixture는 VU당 1회 완료로 실행 경로를 확인하는
-성격에 맞춰 `SMOKE`로 바꿨다. IaC fork(`haeinChoe/guardbench-iac`)는 `smoke.yaml`만 참조한다.
+성격에 맞춰 `SMOKE`로 바꿨다. IaC fork(`haeinChoe/guardbench-iac`)는 `performance/profiles/smoke.yaml`만 참조한다.
+
+같은 정리로 검증 fixture 이름에서 실제 구성 수준처럼 읽히는 `small`과 허용 유형에 없는
+`operating` 표현을 제거했다. `mock-small-operating.yaml`·`mock-operating.yaml`·`mock-two-cases.yaml`은
+`experiments/smoke.yaml`·`profiles/smoke.yaml`·`datasets/two-cases.yaml`로, 식별자는
+`fixture-smoke`·`fixture-infra`·`FIXTURE-SMOKE`로 바꿨다. 인프라 구성 이름은 IaC 단계에서 정한다.
