@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -15,17 +14,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .capacity import assert_manifest_capacity
 from .acceptance import evaluate
 from .api import ApiClient, ApiError
 from .aws import (
     CloudWatchMetricCollector,
     InfrastructureCapacityCollector,
     QueueInspector,
-    expected_infrastructure_capacity_from_environment,
     queue_urls_from_environment,
 )
-from .config import ConfigurationError, load_dataset, load_profile
-from .dataset import load_seed_payload
+from .config import ConfigurationError
+from .plan import load_execution_plan
 from .failure import RunContext, preserve_failure, sanitize_message
 from .storage import ResultUploadError, upload_failure_directory, upload_result_directory
 
@@ -77,34 +76,6 @@ def _assert_preflight(api: ApiClient, inspector: QueueInspector, source_urls: li
     return {"activeRuns": 0, "queues": queues}
 
 
-def _assert_capacity_preflight(expected: dict[str, int], capacity: dict[str, Any]) -> dict[str, Any]:
-    ecs = capacity.get("ecs", {})
-    actual = {
-        "work_items_concurrency": ecs.get("work_items_concurrency"),
-        "ecs_desired_task_count": ecs.get("desired_count"),
-        "ecs_running_task_count": ecs.get("running_task_count"),
-    }
-    mismatches = []
-    if actual["work_items_concurrency"] != expected["work_items_concurrency"]:
-        mismatches.append(
-            "expected worker concurrency = " + str(expected["work_items_concurrency"])
-            + " / actual worker concurrency = " + str(actual["work_items_concurrency"])
-        )
-    if actual["ecs_desired_task_count"] != expected["ecs_task_count"]:
-        mismatches.append(
-            "expected ECS task count = " + str(expected["ecs_task_count"])
-            + " / actual ECS desired task count = " + str(actual["ecs_desired_task_count"])
-        )
-    if actual["ecs_running_task_count"] != expected["ecs_task_count"]:
-        mismatches.append(
-            "expected ECS task count = " + str(expected["ecs_task_count"])
-            + " / actual ECS running task count = " + str(actual["ecs_running_task_count"])
-        )
-    if mismatches:
-        raise RunnerError("Performance preflight FAIL:\n" + "\n".join(mismatches))
-    return {"passed": True, "expected": expected, "actual": actual}
-
-
 def _wait_for_drain(api: ApiClient, inspector: QueueInspector, source_urls: list[str],
                     started_at: datetime, timeout_seconds: float, polling_seconds: float) -> dict[str, Any]:
     drain_started = time.monotonic()
@@ -126,7 +97,7 @@ def _k6_environment(profile: dict[str, Any], run_id: str, suite_id: int, base_ur
     target = profile["target"]
     api = profile["acceptance"]["api"]
     completion = profile["acceptance"]["completion"]
-    return {
+    environment = {
         "PERF_BASE_URL": base_url,
         "PERF_SUITE_ID": str(suite_id),
         "PERF_TARGET_URL": target["identifier"],
@@ -134,8 +105,6 @@ def _k6_environment(profile: dict[str, Any], run_id: str, suite_id: int, base_ur
         "PERF_TARGET_REVISION": target.get("revision", ""),
         "PERF_RUN_ID": run_id,
         "PERF_CONCURRENT_TEST_RUNS": str(workload["concurrent_test_runs"]),
-        "PERF_RAMP_UP_SECONDS": str(workload["ramp_up_seconds"]),
-        "PERF_DURATION_SECONDS": str(workload["duration_seconds"]),
         "PERF_MAX_ITERATIONS_PER_VU": str(workload.get("max_iterations_per_vu", 0)),
         "PERF_COMPLETION_TIMEOUT_SECONDS": str(workload["completion_timeout_seconds"]),
         "PERF_POLLING_INTERVAL_SECONDS": str(workload["polling_interval_seconds"]),
@@ -146,6 +115,12 @@ def _k6_environment(profile: dict[str, Any], run_id: str, suite_id: int, base_ur
         "PERF_COMPLETION_MAX_SECONDS": str(completion["max_seconds"]),
         "PERF_COMPLETION_FAILURE_RATE": str(completion["failure_rate"]),
     }
+    if "stages" in workload:
+        environment["PERF_STAGES_JSON"] = json.dumps(workload["stages"], allow_nan=False)
+    else:
+        environment["PERF_RAMP_UP_SECONDS"] = str(workload["ramp_up_seconds"])
+        environment["PERF_DURATION_SECONDS"] = str(workload["duration_seconds"])
+    return environment
 
 
 def _threshold_inputs(profile: dict[str, Any], run_id: str, suite_id: int, base_url: str) -> dict[str, str]:
@@ -160,6 +135,8 @@ def _threshold_inputs(profile: dict[str, Any], run_id: str, suite_id: int, base_
 def run_k6(profile: dict[str, Any], run_id: str, suite_id: int, base_url: str,
            summary_path: Path, repo_root: Path) -> int:
     environment = os.environ.copy()
+    for name in ("PERF_STAGES_JSON", "PERF_RAMP_UP_SECONDS", "PERF_DURATION_SECONDS"):
+        environment.pop(name, None)
     environment.update(_k6_environment(profile, run_id, suite_id, base_url))
     try:
         result = subprocess.run([
@@ -230,8 +207,20 @@ def _report(result: dict[str, Any]) -> str:
     workload = profile["workload"]
     acceptance = profile["acceptance"]
     capacity = result["infrastructure_capacity"]
+    worker_capacity = capacity["ecs"]["worker"]
     decision = result.get("acceptance", {}).get("status", "FAIL")
     diagnostics = result.get("test_run_diagnostics", {})
+    iteration_check = next(
+        (check for check in result["acceptance"]["checks"] if check["name"] == "completion.iterations"),
+        None,
+    )
+    if "stages" in workload:
+        curve = ", ".join(f"{stage['duration_seconds']}s → {stage['concurrent_test_runs']} VUs"
+                          for stage in workload["stages"])
+        workload_description = f"max configured VU target {workload['concurrent_test_runs']}; stages: {curve}"
+    else:
+        workload_description = (f"{workload['concurrent_test_runs']} concurrent TestRuns, "
+                                f"ramp-up {workload['ramp_up_seconds']}s, duration {workload['duration_seconds']}s")
     lines = [
         f"# {profile['test']['id']} performance report",
         "",
@@ -239,7 +228,7 @@ def _report(result: dict[str, Any]) -> str:
         f"- Application revision: {result['revisions']['application']}",
         f"- Infrastructure revision: {result['revisions']['infrastructure']}",
         f"- Dataset: {result['dataset']['id']} ({result['dataset']['test_case_count']} TestCases)",
-        f"- Workload: {workload['concurrent_test_runs']} concurrent TestRuns, ramp-up {workload['ramp_up_seconds']}s, duration {workload['duration_seconds']}s",
+        f"- Workload: {workload_description}",
         f"- Experiment tuple: ({result['experiment']['work_items_concurrency']}, {result['experiment']['concurrent_test_runs']}, {result['experiment']['ecs_task_count']})",
         "",
         "## Acceptance Criteria",
@@ -258,12 +247,13 @@ def _report(result: dict[str, Any]) -> str:
         f"- Execution error summary: {diagnostics.get('error_summary', {})}",
         f"- Queue drain: {result['drain']}",
         f"- AWS metrics: `aws-metrics.json` ({result['aws_metrics'].get('status')})",
+        *([f"- Iteration validity: {iteration_check}"] if iteration_check is not None else []),
         f"- Decision: **{decision}**",
         "",
         "## Infrastructure Capacity Snapshot",
         "",
         f"- Captured at: {capacity['captured_at']}",
-        f"- ECS: cluster `{capacity['ecs']['cluster_identifier']}`, service `{capacity['ecs']['service_identifier']}`, WorkItem concurrency {capacity['ecs']['work_items_concurrency']}, desired {capacity['ecs']['desired_count']}, running {capacity['ecs']['running_task_count']}, task CPU {capacity['ecs']['task_cpu']}, task memory {capacity['ecs']['task_memory']}",
+        f"- ECS: cluster `{worker_capacity['cluster_identifier']}`, service `{worker_capacity['service_identifier']}`, WorkItem concurrency {worker_capacity['work_items_concurrency']}, desired {worker_capacity['desired_count']}, running {worker_capacity['running_task_count']}, task CPU {worker_capacity['task_cpu']}, task memory {worker_capacity['task_memory']}",
         f"- RDS: instance `{capacity['rds']['db_instance_identifier']}`, class `{capacity['rds']['db_instance_class']}`",
         f"- SageMaker: endpoint `{capacity['sagemaker']['endpoint_name']}`, variant `{capacity['sagemaker']['production_variant_name']}`, type `{capacity['sagemaker']['instance_type']}`, desired {capacity['sagemaker']['desired_instance_count']}, current {capacity['sagemaker']['current_instance_count']}",
         "- 위 값은 실행 전 configured capacity snapshot이며, 실행 중 관측값은 `aws-metrics.json`에 별도로 저장한다.",
@@ -290,41 +280,34 @@ def execute(args: argparse.Namespace) -> int:
     try:
         context.set_phase("preflight")
         _capture_known_revisions(context)
-        experiment_arg = getattr(args, "experiment", None)
-        if experiment_arg:
-            context.record_experiment(experiment_path=experiment_arg)
-        profile_path = Path(args.profile).resolve()
-        dataset_path = Path(args.dataset).resolve()
-        context.record_input("profile_path", str(profile_path))
-        context.record_input("dataset_path", str(dataset_path))
+        context.record_experiment(experiment_path=args.experiment)
         context.result_dir = (
             Path(args.result_dir).resolve() if args.result_dir else repo_root / "performance/results" / context.run_id
         )
 
-        profile = load_profile(profile_path)
+        execution_plan = load_execution_plan(Path(args.experiment))
+        plan = execution_plan.to_dict()
+        context.record_execution_plan(plan)
+        for name in ("profile", "dataset"):
+            context.record_input(f"{name}_path", str(execution_plan.source_paths[name]))
+        profile = execution_plan.profile
+        dataset = execution_plan.dataset
+        payload = execution_plan.seed_payload
+        test_case_count = execution_plan.test_case_count
         run_id = f"{profile['test']['id']}-{run_started_at.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
         context.run_id = run_id
         if not args.result_dir:
             context.result_dir = repo_root / "performance/results" / run_id
-        context.record_input("profile_id", profile["test"]["id"])
-        context.record_input("profile_type", profile["test"]["type"])
-
-        dataset = load_dataset(dataset_path)
-        dataset_id = dataset.get("id", dataset_path.stem)
-        context.record_input("dataset_id", dataset_id)
-        payload, test_case_count = load_seed_payload(dataset_path)
-        context.record_input("test_case_count", test_case_count)
 
         result_dir = context.result_dir
         result_dir.mkdir(parents=True, exist_ok=False)
         context.result_dir_owned = True
-        shutil.copyfile(profile_path, result_dir / "profile.yaml")
-        shutil.copyfile(dataset_path, result_dir / "dataset.yaml")
+        for name, source in execution_plan.source_bytes.items():
+            (result_dir / f"{name}.yaml").write_bytes(source)
+        (result_dir / "execution-plan.json").write_text(
+            json.dumps(plan, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 
         if args.dry_run:
-            plan = {"run_id": run_id, "profile": str(profile_path), "dataset": str(dataset_path),
-                    "test_case_count": test_case_count, "k6_script": str(repo_root / "performance/k6/test-run.js")}
-            (result_dir / "dry-run.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
             print(json.dumps(plan, indent=2))
             return 0
 
@@ -337,13 +320,15 @@ def execute(args: argparse.Namespace) -> int:
             raise ConfigurationError("실제 성능 실행에는 PERF_BASE_URL이 필요합니다.")
         api = ApiClient(base_url)
         source_urls, dlq_urls = queue_urls_from_environment()
-        expected_capacity = expected_infrastructure_capacity_from_environment()
+        expected_capacity = plan["infrastructure"]["expected"]
         inspector = QueueInspector()
-        metric_collector = CloudWatchMetricCollector(repo_root / "performance/metrics/aws.yaml")
+        metric_collector = CloudWatchMetricCollector(
+            repo_root / "performance/metrics/aws.yaml", resources=expected_capacity)
         metric_collector.validate_configuration()
         preflight = _assert_preflight(api, inspector, source_urls, dlq_urls)
-        infrastructure_capacity = InfrastructureCapacityCollector().collect()
-        preflight["capacity"] = _assert_capacity_preflight(expected_capacity, infrastructure_capacity)
+        infrastructure_capacity = InfrastructureCapacityCollector().collect(expected=expected_capacity)
+        preflight["capacity"] = assert_manifest_capacity(expected_capacity, infrastructure_capacity)
+        worker_capacity = infrastructure_capacity["ecs"]["worker"]
         infrastructure_capacity["revisions"] = revisions
 
         context.set_phase("seed")
@@ -386,11 +371,11 @@ def execute(args: argparse.Namespace) -> int:
             "revisions": revisions,
             "infrastructure_capacity": infrastructure_capacity,
             "experiment": {
-                "work_items_concurrency": infrastructure_capacity["ecs"]["work_items_concurrency"],
+                "work_items_concurrency": worker_capacity["work_items_concurrency"],
                 "concurrent_test_runs": workload["concurrent_test_runs"],
-                "ecs_task_count": infrastructure_capacity["ecs"]["desired_count"],
+                "ecs_task_count": worker_capacity["desired_count"],
             },
-            "dataset": {"id": dataset_id, "test_case_count": test_case_count,
+            "dataset": {"id": dataset["id"], "test_case_count": test_case_count,
                         "suite_id": suite_id},
             "profile": profile,
             "k6": {
@@ -436,10 +421,9 @@ def execute(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = _repo_root()
-    command = argparse.ArgumentParser(description="Run a repeatable GuardBench performance profile.")
-    command.add_argument("--profile", default=str(root / "performance/profiles/smoke.yaml"))
-    command.add_argument("--dataset", default=str(root / "performance/datasets/baseline-v1.yaml"))
+    command = argparse.ArgumentParser(description="Run a repeatable GuardBench performance experiment.")
+    command.add_argument("--experiment", required=True,
+                         help="Experiment manifest v1 with expected capacity and Profile/Dataset references.")
     command.add_argument("--result-dir")
     command.add_argument("--dry-run", action="store_true", help="Validate inputs and print the execution plan.")
     return command

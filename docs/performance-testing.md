@@ -80,20 +80,21 @@ RDS instance class 단계 변경, RDS sizing 비교, storage/IOPS/connection poo
 동일 Dataset + 동일 Profile/Workload + ECS/SageMaker Capacity 변경
 ```
 
-manifest 없는 기존 실행에서 `PERF_ECS_CLUSTER`와 `PERF_ECS_SERVICE`는 실행 대상 Performance ECS 환경을 가리켜야 한다.
-Runner는 실행 직전에 해당 Service가 사용하는 active Task Definition과 Service 상태를 AWS에서
-읽어 `result.json.infrastructure_capacity.ecs`에 다음 값을 저장한다.
+실행 대상 자원은 experiment manifest(ADR 0016)의 `infrastructure.expected`가 가리킨다.
+Runner는 실행 직전에 Worker와 선택적 API Service가 사용하는 active Task Definition과 Service
+상태를 AWS에서 읽어 `result.json.infrastructure_capacity.ecs.worker`·`ecs.api`에 다음 값을 저장한다.
 
-| IaC 입력 또는 상태 | snapshot artifact |
+| IaC 입력 또는 상태 | snapshot artifact (`ecs.<role>.`) |
 | --- | --- |
-| Performance 전용 CPU 입력이 반영된 Task Definition | `ecs.task_cpu` |
-| Performance 전용 memory 입력이 반영된 Task Definition | `ecs.task_memory` |
-| Performance Service의 configured desired count | `ecs.desired_count` |
-| snapshot 시점의 실제 running task 수 | `ecs.running_task_count` |
+| Performance 전용 CPU 입력이 반영된 Task Definition | `task_cpu` |
+| Performance 전용 memory 입력이 반영된 Task Definition | `task_memory` |
+| Performance Service의 configured desired count | `desired_count` |
+| snapshot 시점의 실제 running/pending task 수 | `running_task_count`, `pending_task_count` |
+| Service와 PRIMARY deployment의 task definition·rollout 상태 | `task_definition_arn`, `deployments` |
 
-ADR 0016의 manifest 경로는 `infrastructure.expected`의 자원 식별자로 조회하며 ECS Worker와
-선택적 API snapshot을 `ecs.worker`·`ecs.api`로 구분한다. 위 표의 단일 `ecs` 구조와 환경변수는
-기존 실행 경로의 계약이다. manifest capacity 대조 구현은 #22에서 다룬다.
+manifest 없이 환경변수(`PERF_ECS_CLUSTER`, `PERF_EXPECTED_*` 등)로 자원과 기대값을 받던
+legacy 경로와 단일 `ecs` snapshot은 제거했다. 대조 규칙은
+[Manifest capacity preflight](performance-capacity-preflight.md)를 따른다.
 
 Snapshot은 Terraform 입력값 자체가 아니라 AWS에 적용된 실제 구성값을 기록한다. 그러므로
 Terraform apply와 Performance Service rollout이 끝난 뒤 실행해야 하며, snapshot의 CPU/memory가
@@ -108,7 +109,7 @@ Dataset은 무엇을 실행할지, Profile은 얼마나 실행할지를 소유�
 | 구분 | 책임 | 예시 |
 | --- | --- | --- |
 | Dataset | TestSuite/TestCase 내용과 재현 가능한 TestCase 수 | `baseline-v1`, 78 TestCases |
-| Profile | 동시 TestRun 수, ramp-up/duration 또는 stages, test type, acceptance criteria | `smoke`, `SMOKE` |
+| Profile | 동시 TestRun 수, ramp-up/duration 또는 stages, test type, acceptance criteria | `FIXTURE-OPERATING`, `LOAD` |
 
 `performance/datasets/baseline-v1.yaml`은 기존 데모용 78건 import fixture를 immutable
 source로 고정한다. 별도 대규모 실행용 `performance/datasets/large-suite-491-v1.yaml`(491 TestCases, immutable) 파일도 함께 관리한다. 이 Dataset은 classifier 정확도 benchmark가 아니라 반복 가능한 performance
@@ -122,10 +123,10 @@ workload다. 기준으로 사용한 Dataset은 조용히 수정하지 않는다.
 - `STRESS`: 부하 증가에 따른 처리 한계, 지연, SQS backlog와 실패 양상 확인
 - `SOAK`: 일정한 부하를 장시간 유지하며 메모리·연결·backlog·오류 누적 확인
 
-현재 프로필 파일은 `smoke.yaml`(`SMOKE`)과 `concurrent-10.yaml`(`LOAD`) 두 개다.
+legacy 기본 실행용 `smoke.yaml`(`SMOKE`)과 `concurrent-10.yaml`(`LOAD`)은 제거했다.
+현재 실제 운영 프로필 파일은 없고 검증 fixture만 `performance/fixtures/profiles/`에 있다.
 Runner는 `SMOKE`, `LOAD`, `PEAK`, `STRESS`, `SOAK`를 허용하지만 허용 타입이 있다는 사실이
-해당 프로필의 구현 완료를 뜻하지 않는다. 유형별 부하 수치·시간·판정 기준과 프로필 구현,
-기존 `LOAD` 파일·허용 타입의 전환은 #23 범위다. 기존 파일과 타입은 이 문서만으로 제거하지 않는다.
+해당 프로필의 구현 완료를 뜻하지 않는다. 유형별 부하 수치·시간·판정 기준과 프로필 구현은 #23 범위다.
 
 ## 책임 경계
 
@@ -160,14 +161,7 @@ export PERF_TARGET_REVISION=<application-revision>
 export PERF_SOURCE_QUEUE_URLS=<resolve-url>,<work-items-url>,<finalize-url>
 export PERF_DLQ_URLS=<resolve-dlq-url>,<work-items-dlq-url>,<finalize-dlq-url>
 export AWS_REGION=ap-northeast-2
-export PERF_ECS_CLUSTER=<performance-cluster-name>
-export PERF_ECS_SERVICE=<performance-service-name>
-# Runner preflight expected values; these must match the deployed Performance Backend.
-export PERF_EXPECTED_WORK_ITEMS_CONCURRENCY=<expected-worker-concurrency>
-export PERF_EXPECTED_ECS_TASK_COUNT=<expected-ecs-task-count>
-export PERF_RDS_INSTANCE_ID=<db-instance-id>
-export PERF_SAGEMAKER_ENDPOINT_NAME=<classifier-endpoint-name>
-export PERF_SAGEMAKER_VARIANT_NAME=<classifier-variant-name>
+# ECS/RDS/SageMaker 식별자와 기대 capacity는 환경변수가 아니라 experiment manifest가 소유한다.
 # CloudWatch SQS QueueName dimensions (source + DLQ)
 export PERF_SOURCE_QUEUE_RESOLVE_NAME=<resolve-queue-name>
 export PERF_SOURCE_QUEUE_WORK_ITEMS_NAME=<work-items-queue-name>
@@ -177,10 +171,10 @@ export PERF_DLQ_WORK_ITEMS_NAME=<work-items-dlq-name>
 export PERF_DLQ_FINALIZE_NAME=<finalize-dlq-name>
 
 # 입력과 실행 계획만 검증한다. API, AWS, DB를 호출하지 않는다.
-python3 -m performance.runner.cli --dry-run
+python3 -m performance.runner.cli --experiment <experiment.yaml> --dry-run
 
-# 실제 비교 실행: preflight (worker concurrency/task count 포함) → Dataset seed → k6 → drain → metrics → report
-python3 -m performance.runner.cli
+# 실제 비교 실행: preflight (manifest capacity 대조 포함) → Dataset seed → k6 → drain → metrics → report
+python3 -m performance.runner.cli --experiment <experiment.yaml>
 ```
 
 Performance API가 internal ALB 뒤에 있으면 Worker 설정의
@@ -196,23 +190,24 @@ guardbench:
       - internal-performance-api-123.ap-northeast-2.elb.amazonaws.com
 ```
 
-실행 결과는 `performance/results/<run-id>/`에 `profile.yaml`, `dataset.yaml`,
-`k6-summary.json`, `aws-metrics.json`, `result.json`, `report.md`로 저장한다. `result.json`의
+실행 결과는 `performance/results/<run-id>/`에 원본 입력 `experiment.yaml`, `profile.yaml`,
+`dataset.yaml`과 `execution-plan.json`, `k6-summary.json`, `aws-metrics.json`, `result.json`,
+`report.md`로 저장한다. dry-run은 원본 입력 세 개와 `execution-plan.json`만 남긴다. `result.json`의
 `infrastructure_capacity`는 실행 전 AWS API에서 읽은 configured capacity snapshot이며,
 `revisions`와 capture 시각을 함께 보존한다. `aws-metrics.json`은 실행 중 관측한 utilization,
 latency, queue 등의 시계열을 별도로 보존한다. `report.md`의 Application/Infrastructure
 revision과 snapshot의 revision은 `APP_REVISION`, `INFRA_REVISION` 환경변수로 주입한다.
 
-manifest 없는 기존 실행 경로에서 Runner는 실행 전에 `PERF_EXPECTED_WORK_ITEMS_CONCURRENCY`를 active ECS Task Definition의
-`GUARDBENCH_WORKER_WORK_ITEMS_CONCURRENCY`와 비교한다. 또한
-`PERF_EXPECTED_ECS_TASK_COUNT`를 Performance Service의 `desiredCount`와 snapshot 시점의
-`runningCount` 모두와 비교한다. 하나라도 다르면 Dataset seed와 k6 실행을 시작하지 않고
-명확한 preflight 오류로 종료한다. ADR 0016의 manifest 경로는 `infrastructure.expected`로 Worker와 선택적 API를 분리 대조한다.
+Runner는 실행 전에 manifest의 `infrastructure.expected.ecs.worker.work_items_concurrency`를 Worker
+active Task Definition의 `GUARDBENCH_WORKER_WORK_ITEMS_CONCURRENCY`와 비교하고, `desired_count`를
+Service의 `desiredCount`·`runningCount`와 비교한다. RDS/SageMaker와 선택적 API도 같은 방식으로
+대조한다. 하나라도 다르면 Dataset seed와 k6 실행을 시작하지 않고 expected/actual 차이를 담은
+preflight 오류로 종료한다.
 
-실제 WorkItem concurrency는 기존 경로의 `result.json.infrastructure_capacity.ecs.work_items_concurrency`(manifest 경로는 `ecs.worker.work_items_concurrency`)에
+실제 WorkItem concurrency는 `result.json.infrastructure_capacity.ecs.worker.work_items_concurrency`에
 기록한다. `result.json.experiment`는
 `(work_items_concurrency, concurrent_test_runs, ecs_task_count)` 튜플을 명시하며,
-여기서 `ecs_task_count`는 preflight를 통과한 Worker(기존 경로는 단일 Service)의 configured `desiredCount`다.
+여기서 `ecs_task_count`는 preflight를 통과한 Worker의 configured `desiredCount`다.
 
 ## Spot Runner image와 결과 보존
 
@@ -236,10 +231,10 @@ Build script는 호출자가 전달한 repository URI에 현재 Backend Git SHA�
 따라서 image tag, `APP_REVISION`, OCI revision label은 항상 같은 revision을 가리키며, 호출자가
 서로 다른 tag/revision 조합을 지정할 수 없다.
 
-Container 시작점은 `python3.11 -m performance.runner.cli`이며 기존 `--dry-run`,
-`--profile`, `--dataset` 옵션을 그대로 사용한다. `/workspace/bin/verify-runtime`은 container
-내부의 Python, k6, profile, dataset, canonical fixture와
-`performance.runner` import를 확인하고 하나라도 없으면 non-zero로 종료한다.
+Container 시작점은 `python3.11 -m performance.runner.cli`이며 필수 `--experiment`와 선택
+`--dry-run`, `--result-dir` 옵션을 받는다. `/workspace/bin/verify-runtime`은 container
+내부의 Python, k6, Dataset, canonical fixture와 `performance.runner` import를 확인하고
+검증 fixture manifest의 dry-run을 실행한다. 하나라도 실패하면 non-zero로 종료한다.
 
 실제 Runner는 `PERFORMANCE_RESULTS_BUCKET`이 설정된 경우, 결과 파일을 모두 만든 뒤 다음
 prefix에 업로드한다. 따라서 PASS와 acceptance FAIL(k6 exit 99 포함)은 모두 보존된다. S3 upload
@@ -357,9 +352,9 @@ CPU·connection·backlog 지표는 해당 조건에서의 관찰 결과로 해�
 
 SageMaker metric은 `EndpointName + VariantName` dimension으로 조회한다. 성능 Baseline에서는
 classifier가 실제 E2E 경로의 일부이므로 ECS·SQS·RDS와 함께 SageMaker datapoint도 있어야
-AWS metric 수집 acceptance가 통과한다. 기존 실행의 리소스 이름은 `performance/metrics/aws.yaml`과
-환경변수에서 해석하고, manifest 경로는 capacity 조회와 동일한 Worker/RDS/SageMaker 식별자를
-CloudWatch dimension에도 사용한다. SQS QueueName/URL은 환경 입력을 유지한다. 설정된 dimension이 비어 있는 metric은 `aws-metrics.json`에 `skipped`로 남긴다.
+AWS metric 수집 acceptance가 통과한다. Worker ECS/RDS/SageMaker dimension은 capacity 조회와
+동일한 manifest 식별자를 사용하고, SQS QueueName/URL은 환경 입력을 유지한다. dimension이 비어 있는
+metric이 있으면 `validate_configuration`이 seed 전에 실행을 중단한다.
 
 `TestRun create 202`는 E2E 성공과 다르다. k6는 `FINISHED`까지 polling하고
 `executionOutcome=COMPLETED`인지 별도로 확인한다. Classifier provider 실패는 임의 ALLOW/BLOCK으로
@@ -391,9 +386,9 @@ Baseline 비교 시 실행 전 preflight를 통과하고 아래 항목을 고정
 
 `concurrent_test_runs`는 configured VU target이며 단계형 부하에서는 stage target의 최댓값이다.
 한 VU는 TestRun을 접수한 뒤 `FINISHED`까지 polling한다. 이 값은 관측된 실제 동시 Run 수를
-보장하지 않으며 전체 부하 곡선과 함께 해석한다. 현재 `smoke`는
-`max_iterations_per_vu: 1`이므로 1 VU가 1건을 완료하고 끝나는 Smoke이며, `duration_seconds`
-동안 지속적으로 새 Run을 생성하는 Profile이 아니다. 반복 부하를 가하는 STRESS/SOAK Profile에서는 이
+보장하지 않으며 전체 부하 곡선과 함께 해석한다. `max_iterations_per_vu: 1`인 Smoke 성격의
+Profile은 VU마다 1건을 완료하고 끝나며, `duration_seconds` 동안 지속적으로 새 Run을 생성하지
+않는다. 반복 부하를 가하는 STRESS/SOAK Profile에서는 이
 필드를 0(제한 없음) 또는 적절한 반복 수로 명시해 생성률과 완료 polling traffic을 함께
 검토한다.
 
