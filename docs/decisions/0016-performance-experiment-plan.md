@@ -175,8 +175,9 @@ schema_version=1, run_id, status=ERROR, phase, error(type/message), available_ar
 preservation_errors와 확보된 입력/revision을 남긴다. 원래 실패를 보존 실패로 덮어쓰지 않는다.
 완료 S3 upload의 필수 파일 검증은 유지하고, 부분 upload는 별도 상태/저장 경로로 구분한다.
 새 schema_version=2 결과는 모든 완료 파일 뒤에 upload-complete.json을 마지막으로 게시한다.
-분석 소비처는 새 결과의 완료 표식을 확인한다. 실제 소비 중인 과거 schema-less 결과는
-종전 필수 파일 검증으로 읽되 새 결과의 누락 표식을 legacy로 간주하지 않는다.
+분석 소비처는 모든 결과의 완료 표식과 선언된 파일 전체의 SHA-256을 확인한다. 실행 입력
+(`experiment.yaml`, `profile.yaml`, `dataset.yaml`, `execution-plan.json`)도 완료 결과의 필수 파일이다.
+`schema_version`이 2 이상이 아닌 결과는 분석하지 않는다.
 측정 이후 upload만 실패하면 로컬 result의 성능 PASS/FAIL은 그대로 두고 별도 failure.json에
 phase=upload를 남긴다. 입력 검증 이전에 최소 run ID·단계를 마련하고, 결과 디렉터리 충돌은
 기존 파일을 덮어쓰지 않는다. 보존 자체가 실패하면 stderr에 원래 실패와 보존 실패를 함께 남긴다.
@@ -214,6 +215,10 @@ Runner는 필수 `--experiment`만 받고, 자원 식별과 기대 capacity는 m
 `bin/verify-runtime`은 검증 fixture manifest의 dry-run으로 확인한다. IaC Runner host 절차 전환은
 haeinChoe/guardbench-iac#11에서 다룬다. `ramp_up_seconds`/`duration_seconds` workload 형식과
 Dataset 파일은 그대로 사용한다.
+
+같은 결정으로 분석 workflow는 `schema_version >= 2`, 완료 표식, 실행 입력을 포함한 필수 파일 선언과
+모든 선언 파일의 `file_sha256`가 있는 완료 결과만 번들링한다. 모든 실행이 manifest로 시작하므로
+실행 입력 파일도 필수 결과 파일이다.
 
 ### 2026-11-22 — 허용 테스트 유형 축소
 
