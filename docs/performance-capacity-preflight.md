@@ -26,17 +26,17 @@
 배포 상태도 snapshot에 포함한다. (W,C,T)는 Worker의 관측 W/desired count를 사용한다.
 API까지 포함한 보고서 구성과 결과 provenance 확장은 후속 #24 범위다.
 
-Manifest의 Worker/RDS/SageMaker 식별자는 capacity 조회와 CloudWatch dimensions의 공통
-입력이며 기존 자원 환경변수보다 우선한다. ECS ARN 입력은 CloudWatch 이름 dimension으로
+Manifest의 Worker/RDS/SageMaker 식별자는 capacity 조회와 CloudWatch dimensions의 유일한
+입력이다. 자원 식별 환경변수는 읽지 않는다. ECS ARN 입력은 CloudWatch 이름 dimension으로
 변환한다. SQS QueueName/URL과 API base URL은 환경 입력을 유지한다. 환경을 전역 수정하지 않는다.
 현재 metric 정의는 Worker ECS를 측정한다. API metric을 Worker ID로 생성하지 않는다.
 
-기존 manifest 없는 `collect()`와 단일 `ecs` snapshot, 환경 기반 expected count 검증은
-`bin/run-performance`, `bin/verify-runtime`, Docker ENTRYPOINT 및 기존 Runner/분석 소비처를
-위해 유지한다. 공개 API, DB schema, migration, production dependency는 변경하지 않는다.
-구 경로 제거는 소비처 전환과 별도 계약 대체가 승인될 때 검토한다.
+manifest 없는 legacy 경로(`--profile`/`--dataset`, 환경변수 기반 `collect()`와 단일 `ecs`
+snapshot, `PERF_EXPECTED_*` 대조)는 #21 결정에 따라 이 변경에서 제거했다. Backend 내부 소비처인
+`bin/verify-runtime`은 fixture manifest dry-run으로 전환했다. IaC Runner host 절차와 환경 키 전환은
+haeinChoe/guardbench-iac#11에서 다룬다. 공개 API, DB schema, migration, production dependency는 변경하지 않는다.
 
 검증은 `python3 -m unittest discover -s performance/runner -p 'test_*.py' -q`로 실행한다.
 AWS client 대역의 역할별 응답/조회 인자, 누락·오류, 모든 비교 필드 차이에서 seed/k6 차단,
-legacy 경로, dry-run 경계를 확인한다. 실제 AWS, IAM/VPC, quota, 실제 k6 성능은 검증하지 않았다.
-되돌리기는 이 optional manifest preflight 변경을 revert하는 것으로 가능하며 데이터 변경은 없다.
+`--experiment` 단일 입력, dry-run 경계를 확인한다. 실제 AWS, IAM/VPC, quota, 실제 k6 성능은 검증하지 않았다.
+되돌리기는 이 변경을 revert하는 것으로 가능하며(legacy 경로가 함께 복원된다) 데이터 변경은 없다.
