@@ -90,7 +90,7 @@ def _k6_environment(profile: dict[str, Any], run_id: str, suite_id: int, base_ur
     target = profile["target"]
     api = profile["acceptance"]["api"]
     completion = profile["acceptance"]["completion"]
-    return {
+    environment = {
         "PERF_BASE_URL": base_url,
         "PERF_SUITE_ID": str(suite_id),
         "PERF_TARGET_URL": target["identifier"],
@@ -98,8 +98,6 @@ def _k6_environment(profile: dict[str, Any], run_id: str, suite_id: int, base_ur
         "PERF_TARGET_REVISION": target.get("revision", ""),
         "PERF_RUN_ID": run_id,
         "PERF_CONCURRENT_TEST_RUNS": str(workload["concurrent_test_runs"]),
-        "PERF_RAMP_UP_SECONDS": str(workload["ramp_up_seconds"]),
-        "PERF_DURATION_SECONDS": str(workload["duration_seconds"]),
         "PERF_MAX_ITERATIONS_PER_VU": str(workload.get("max_iterations_per_vu", 0)),
         "PERF_COMPLETION_TIMEOUT_SECONDS": str(workload["completion_timeout_seconds"]),
         "PERF_POLLING_INTERVAL_SECONDS": str(workload["polling_interval_seconds"]),
@@ -110,6 +108,12 @@ def _k6_environment(profile: dict[str, Any], run_id: str, suite_id: int, base_ur
         "PERF_COMPLETION_MAX_SECONDS": str(completion["max_seconds"]),
         "PERF_COMPLETION_FAILURE_RATE": str(completion["failure_rate"]),
     }
+    if "stages" in workload:
+        environment["PERF_STAGES_JSON"] = json.dumps(workload["stages"], allow_nan=False)
+    else:
+        environment["PERF_RAMP_UP_SECONDS"] = str(workload["ramp_up_seconds"])
+        environment["PERF_DURATION_SECONDS"] = str(workload["duration_seconds"])
+    return environment
 
 
 def _threshold_inputs(profile: dict[str, Any], run_id: str, suite_id: int, base_url: str) -> dict[str, str]:
@@ -124,6 +128,8 @@ def _threshold_inputs(profile: dict[str, Any], run_id: str, suite_id: int, base_
 def run_k6(profile: dict[str, Any], run_id: str, suite_id: int, base_url: str,
            summary_path: Path, repo_root: Path) -> int:
     environment = os.environ.copy()
+    for name in ("PERF_STAGES_JSON", "PERF_RAMP_UP_SECONDS", "PERF_DURATION_SECONDS"):
+        environment.pop(name, None)
     environment.update(_k6_environment(profile, run_id, suite_id, base_url))
     try:
         result = subprocess.run([
@@ -197,6 +203,17 @@ def _report(result: dict[str, Any]) -> str:
     worker_capacity = capacity["ecs"]["worker"]
     decision = result.get("acceptance", {}).get("status", "FAIL")
     diagnostics = result.get("test_run_diagnostics", {})
+    iteration_check = next(
+        (check for check in result["acceptance"]["checks"] if check["name"] == "completion.iterations"),
+        None,
+    )
+    if "stages" in workload:
+        curve = ", ".join(f"{stage['duration_seconds']}s → {stage['concurrent_test_runs']} VUs"
+                          for stage in workload["stages"])
+        workload_description = f"max configured VU target {workload['concurrent_test_runs']}; stages: {curve}"
+    else:
+        workload_description = (f"{workload['concurrent_test_runs']} concurrent TestRuns, "
+                                f"ramp-up {workload['ramp_up_seconds']}s, duration {workload['duration_seconds']}s")
     lines = [
         f"# {profile['test']['id']} performance report",
         "",
@@ -204,7 +221,7 @@ def _report(result: dict[str, Any]) -> str:
         f"- Application revision: {result['revisions']['application']}",
         f"- Infrastructure revision: {result['revisions']['infrastructure']}",
         f"- Dataset: {result['dataset']['id']} ({result['dataset']['test_case_count']} TestCases)",
-        f"- Workload: {workload['concurrent_test_runs']} concurrent TestRuns, ramp-up {workload['ramp_up_seconds']}s, duration {workload['duration_seconds']}s",
+        f"- Workload: {workload_description}",
         f"- Experiment tuple: ({result['experiment']['work_items_concurrency']}, {result['experiment']['concurrent_test_runs']}, {result['experiment']['ecs_task_count']})",
         "",
         "## Acceptance Criteria",
@@ -223,6 +240,7 @@ def _report(result: dict[str, Any]) -> str:
         f"- Execution error summary: {diagnostics.get('error_summary', {})}",
         f"- Queue drain: {result['drain']}",
         f"- AWS metrics: `aws-metrics.json` ({result['aws_metrics'].get('status')})",
+        *([f"- Iteration validity: {iteration_check}"] if iteration_check is not None else []),
         f"- Decision: **{decision}**",
         "",
         "## Infrastructure Capacity Snapshot",

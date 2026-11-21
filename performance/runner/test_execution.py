@@ -84,6 +84,7 @@ class PerformanceExecutionTest(unittest.TestCase):
         self.assertEqual(self.capacity.collect.return_value["ecs"], result["infrastructure_capacity"]["ecs"])
         self.assertEqual({"work_items_concurrency": 2, "concurrent_test_runs": 2, "ecs_task_count": 1},
                          result["experiment"])
+        self.assertNotIn("completion.iterations", [check["name"] for check in result["acceptance"]["checks"]])
         self.capacity.collect.assert_called_once_with(expected=self.expected)
         self.assertEqual(self.expected, self.metric_collector.call_args.kwargs["resources"])
         self.metrics.validate_configuration.assert_called_once()
@@ -92,6 +93,7 @@ class PerformanceExecutionTest(unittest.TestCase):
         self.subprocess.assert_not_called()
         for name in ("report.md", "execution-plan.json", "experiment.yaml", "profile.yaml", "dataset.yaml"):
             self.assertTrue((self.result_dir / name).is_file(), name)
+        self.assertNotIn("Iteration validity", (self.result_dir / "report.md").read_text())
 
     def test_result_uses_resolved_snapshots_when_files_change_during_workload(self):
         def mutate_sources(*args):
@@ -107,6 +109,29 @@ class PerformanceExecutionTest(unittest.TestCase):
         self.assertEqual(2, result["dataset"]["test_case_count"])
         self.assertEqual("FIXTURE-SMOKE", result["profile"]["test"]["id"])
         self.assertEqual(2, len(self.api.create_suite.call_args.args[0]["testCases"]))
+
+    def test_staged_workload_preserves_curve_acceptance_and_iteration_validity_in_report(self):
+        def run_staged_k6(*args):
+            summary = passing_summary()
+            summary["metrics"]["test_run_iterations_started"] = {"values": {"count": 1}}
+            summary["metrics"]["test_run_iterations_completed"] = {"values": {"count": 1}}
+            args[4].write_text(json.dumps(summary))
+            return 0
+
+        shutil.copyfile(MANIFEST.parent.parent / "profiles/staged-stress.yaml", self.profile_path)
+        self.k6.side_effect = run_staged_k6
+
+        self.assertEqual(0, cli.execute(self.args))
+
+        result = json.loads((self.result_dir / "result.json").read_text())
+        self.assertEqual(3, result["experiment"]["concurrent_test_runs"])
+        self.assertEqual(5, len(result["profile"]["workload"]["stages"]))
+        self.assertEqual(0, result["profile"]["acceptance"]["completion"]["failure_rate"])
+        report = (self.result_dir / "report.md").read_text()
+        self.assertIn("max configured VU target 3", report)
+        self.assertIn("1s → 0 VUs", report)
+        self.assertIn("'interrupted': 0", report)
+        self.assertIn("**PASS**", report)
 
     def test_active_run_blocks_seed_and_workload(self):
         self.api.list_runs.return_value = [{"id": 9}]

@@ -1,12 +1,15 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
-import { Rate, Trend } from 'k6/metrics';
+import { Counter, Rate, Trend } from 'k6/metrics';
 
 const baseUrl = (__ENV.PERF_BASE_URL || '').replace(/\/$/, '');
 const suiteId = __ENV.PERF_SUITE_ID;
 const maxIterationsPerVu = Number(__ENV.PERF_MAX_ITERATIONS_PER_VU || 0);
 const completionTimeoutSeconds = Number(__ENV.PERF_COMPLETION_TIMEOUT_SECONDS || 300);
 const pollingIntervalSeconds = Number(__ENV.PERF_POLLING_INTERVAL_SECONDS || 2);
+
+export const iterationsStarted = new Counter('test_run_iterations_started');
+export const iterationsCompleted = new Counter('test_run_iterations_completed');
 
 export const createLatency = new Trend('test_run_create_latency', true);
 export const createErrors = new Rate('test_run_create_errors');
@@ -23,8 +26,17 @@ const payload = JSON.stringify({
   },
 });
 
+function sleepUntilDeadline(deadline) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    return false;
+  }
+  sleep(Math.min(pollingIntervalSeconds, remainingMs / 1000));
+  return true;
+}
+
 function pollUntilFinished(testRunId, startedAt) {
-  const deadline = Date.now() + completionTimeoutSeconds * 1000;
+  const deadline = startedAt + completionTimeoutSeconds * 1000;
   let lastStatus = '';
   while (Date.now() < deadline) {
     const response = http.get(`${baseUrl}/api/v1/test-runs/${testRunId}`, {
@@ -38,7 +50,9 @@ function pollUntilFinished(testRunId, startedAt) {
     }
     lastStatus = body && body.data ? body.data.status : '';
     if (response.status !== 200 || !body || !body.data) {
-      sleep(pollingIntervalSeconds);
+      if (!sleepUntilDeadline(deadline)) {
+        break;
+      }
       continue;
     }
     if (lastStatus === 'FINISHED') {
@@ -47,24 +61,36 @@ function pollUntilFinished(testRunId, startedAt) {
       completionFailures.add(terminalFailure ? 1 : 0);
       return !terminalFailure;
     }
-    sleep(pollingIntervalSeconds);
+    if (!sleepUntilDeadline(deadline)) {
+      break;
+    }
   }
   completionFailures.add(1);
   console.error(`TestRun ${testRunId} did not finish before timeout (last status: ${lastStatus})`);
   return false;
 }
 
+const graceBufferSeconds = Math.max(1, Math.ceil(pollingIntervalSeconds));
+const graceSeconds = completionTimeoutSeconds + graceBufferSeconds;
+
+const configuredStages = __ENV.PERF_STAGES_JSON ? JSON.parse(__ENV.PERF_STAGES_JSON) : null;
+const stages = configuredStages
+  ? configuredStages.map((stage) => ({
+    duration: `${stage.duration_seconds}s`, target: stage.concurrent_test_runs,
+  }))
+  : [
+    { duration: `${Number(__ENV.PERF_RAMP_UP_SECONDS || 0)}s`, target: Number(__ENV.PERF_CONCURRENT_TEST_RUNS || 1) },
+    { duration: `${Number(__ENV.PERF_DURATION_SECONDS || 10)}s`, target: Number(__ENV.PERF_CONCURRENT_TEST_RUNS || 1) },
+  ];
+
 export const options = {
   scenarios: {
     workload: {
       executor: 'ramping-vus',
       startVUs: 0,
-      stages: [
-        { duration: `${Number(__ENV.PERF_RAMP_UP_SECONDS || 0)}s`, target: Number(__ENV.PERF_CONCURRENT_TEST_RUNS || 1) },
-        { duration: `${Number(__ENV.PERF_DURATION_SECONDS || 10)}s`, target: Number(__ENV.PERF_CONCURRENT_TEST_RUNS || 1) },
-      ],
-      gracefulRampDown: '0s',
-      gracefulStop: `${Number(__ENV.PERF_COMPLETION_TIMEOUT_SECONDS || 300)}s`,
+      stages,
+      gracefulRampDown: configuredStages ? `${graceSeconds}s` : '0s',
+      gracefulStop: `${graceSeconds}s`,
     },
   },
   summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(50)', 'p(90)', 'p(95)', 'p(99)'],
@@ -84,6 +110,8 @@ export default function () {
   if (maxIterationsPerVu > 0 && __ITER >= maxIterationsPerVu) {
     return;
   }
+  iterationsStarted.add(1);
+  iterationsCompleted.add(0);
   const startedAt = Date.now();
   const response = http.post(`${baseUrl}/api/v1/test-runs`, payload, {
     headers: {
@@ -108,4 +136,5 @@ export default function () {
   if (accepted) {
     pollUntilFinished(body.data.id, startedAt);
   }
+  iterationsCompleted.add(1);
 }
