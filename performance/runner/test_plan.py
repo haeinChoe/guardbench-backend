@@ -180,6 +180,21 @@ class ExecutionPlanTest(unittest.TestCase):
         with self.assertRaises(ConfigurationError):
             load_execution_plan(self.directory / "missing.yaml")
 
+    def test_profile_accepts_only_adr_0016_test_types(self):
+        for test_type in ("SMOKE", "STRESS", "SOAK"):
+            with self.subTest(test_type=test_type), patch.dict(os.environ, {}, clear=True):
+                profile = json.loads(json.dumps(self.profile))
+                profile["test"]["type"] = test_type
+                self.profile_path.write_text(yaml.safe_dump(profile))
+                self.assertEqual(test_type, load_execution_plan(self.manifest_path).profile["test"]["type"])
+        for test_type in ("LOAD", "PEAK", "smoke"):
+            with self.subTest(test_type=test_type), patch.dict(os.environ, {}, clear=True):
+                profile = json.loads(json.dumps(self.profile))
+                profile["test"]["type"] = test_type
+                self.profile_path.write_text(yaml.safe_dump(profile))
+                with self.assertRaises(ConfigurationError):
+                    load_execution_plan(self.manifest_path)
+
     def test_profile_rejects_nonfinite_wrong_nested_types_unknown_and_unresolved_values(self):
         mutations = [
             (("test", "id"), []), (("test", "type"), []),
