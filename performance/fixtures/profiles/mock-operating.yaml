@@ -2,7 +2,7 @@
 test:
   id: FIXTURE-OPERATING
   name: mock operating workload
-  type: LOAD
+  type: SMOKE
 workload:
   concurrent_test_runs: 2
   ramp_up_seconds: 0

@@ -109,7 +109,7 @@ Dataset은 무엇을 실행할지, Profile은 얼마나 실행할지를 소유�
 | 구분 | 책임 | 예시 |
 | --- | --- | --- |
 | Dataset | TestSuite/TestCase 내용과 재현 가능한 TestCase 수 | `baseline-v1`, 78 TestCases |
-| Profile | 동시 TestRun 수, ramp-up/duration 또는 stages, test type, acceptance criteria | `FIXTURE-OPERATING`, `LOAD` |
+| Profile | 동시 TestRun 수, ramp-up/duration 또는 stages, test type, acceptance criteria | `FIXTURE-OPERATING`, `SMOKE` |
 
 `performance/datasets/baseline-v1.yaml`은 기존 데모용 78건 import fixture를 immutable
 source로 고정한다. 별도 대규모 실행용 `performance/datasets/large-suite-491-v1.yaml`(491 TestCases, immutable) 파일도 함께 관리한다. 이 Dataset은 classifier 정확도 benchmark가 아니라 반복 가능한 performance
@@ -125,7 +125,7 @@ workload다. 기준으로 사용한 Dataset은 조용히 수정하지 않는다.
 
 legacy 기본 실행용 `smoke.yaml`(`SMOKE`)과 `concurrent-10.yaml`(`LOAD`)은 제거했다.
 현재 실제 운영 프로필 파일은 없고 검증 fixture만 `performance/fixtures/profiles/`에 있다.
-Runner는 `SMOKE`, `LOAD`, `PEAK`, `STRESS`, `SOAK`를 허용하지만 허용 타입이 있다는 사실이
+Runner는 이 세 유형만 허용하고 다른 `test.type`은 설정 오류로 거부한다. 허용 유형이 있다는 사실이
 해당 프로필의 구현 완료를 뜻하지 않는다. 유형별 부하 수치·시간·판정 기준과 프로필 구현은 #23 범위다.
 
 ## 책임 경계
