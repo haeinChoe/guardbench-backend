@@ -106,6 +106,27 @@ jobs:
             exit 1
           fi
 
+          if ! jq -e '
+            (.execution_plan | type == "object")
+            and (.execution_plan.experiment | type == "object")
+            and (.execution_plan.experiment.id | type == "string" and (gsub("^\\s+|\\s+$"; "") | length > 0))
+          ' bundle/runner/result.json >/dev/null 2>&1; then
+            echo "Error: ${prefix}result.json is missing required .execution_plan.experiment.id." >&2
+            exit 1
+          fi
+
+          if ! jq -e '
+            (.execution_plan.infrastructure | type == "object")
+            and (.execution_plan.infrastructure.id | type == "string" and (gsub("^\\s+|\\s+$"; "") | length > 0))
+            and (.execution_plan.infrastructure.revision | type == "string" and (gsub("^\\s+|\\s+$"; "") | length > 0))
+            and (.scenario | type == "object")
+            and (.scenario.id | type == "string" and (gsub("^\\s+|\\s+$"; "") | length > 0))
+            and (.scenario.type | type == "string" and (gsub("^\\s+|\\s+$"; "") | length > 0))
+          ' bundle/runner/result.json >/dev/null 2>&1; then
+            echo "Error: ${prefix}result.json is missing required infrastructure or scenario identity fields." >&2
+            exit 1
+          fi
+
           if [[ ! -s "bundle/runner/upload-complete.json" ]]; then
             echo "Error: ${prefix}upload-complete.json is missing or empty; refusing incomplete publication." >&2
             report_failure_diagnostics "incomplete S3 publication (missing upload-complete.json)"
@@ -153,6 +174,11 @@ jobs:
           set -euo pipefail
           started_at="$(jq -er '.started_at' bundle/runner/result.json)"
           finished_at="$(jq -er '.finished_at' bundle/runner/result.json)"
+          experiment_id="$(jq -er '.execution_plan.experiment.id' bundle/runner/result.json)"
+          infrastructure_id="$(jq -er '.execution_plan.infrastructure.id' bundle/runner/result.json)"
+          infrastructure_revision="$(jq -er '.execution_plan.infrastructure.revision' bundle/runner/result.json)"
+          scenario_id="$(jq -er '.scenario.id' bundle/runner/result.json)"
+          scenario_type="$(jq -er '.scenario.type' bundle/runner/result.json)"
           start_epoch="$(( $(date -u -d "$started_at" +%s) - 30 ))"
           end_epoch="$(( $(date -u -d "$finished_at" +%s) + 30 ))"
           test "$end_epoch" -gt "$start_epoch"
@@ -161,6 +187,11 @@ jobs:
           {
             echo "### Performance analysis bundle"
             echo "- Run ID: ${RUN_ID}"
+            echo "- Experiment ID: ${experiment_id}"
+            echo "- Infrastructure ID: ${infrastructure_id}"
+            echo "- Infrastructure revision: ${infrastructure_revision}"
+            echo "- Scenario ID: ${scenario_id}"
+            echo "- Scenario type: ${scenario_type}"
             echo "- S3 bucket: ${RESULTS_BUCKET}"
             echo "- Log group: ${LOG_GROUP}"
             echo "- Runner window: ${started_at} ~ ${finished_at}"
@@ -236,14 +267,25 @@ jobs:
 
           run_query retries-and-terminal "fields @timestamp, @message | filter (@message like /실패로 재시도합니다/ or @message like /terminal 결과를 저장했습니다/) ${filter} | parse @message /snapshotId=(?<snapshotId>[0-9]+)/ | parse @message /attemptCount=(?<attemptCount>[0-9]+)/ | parse @message /errorStage=(?<errorStage>[^ ]+)/ | parse @message /errorCode=(?<errorCode>[^ ]+)/ | display @timestamp, snapshotId, attemptCount, errorStage, errorCode, @message | sort @timestamp asc"
 
+          experiment_id="$(jq -er '.execution_plan.experiment.id' bundle/runner/result.json)"
+          infrastructure_id="$(jq -er '.execution_plan.infrastructure.id' bundle/runner/result.json)"
+          infrastructure_revision="$(jq -er '.execution_plan.infrastructure.revision' bundle/runner/result.json)"
+          scenario_id="$(jq -er '.scenario.id' bundle/runner/result.json)"
+          scenario_type="$(jq -er '.scenario.type' bundle/runner/result.json)"
+
           jq -n \
             --arg runId "$RUN_ID" \
+            --arg experimentId "$experiment_id" \
+            --arg infrastructureId "$infrastructure_id" \
+            --arg infrastructureRevision "$infrastructure_revision" \
+            --arg scenarioId "$scenario_id" \
+            --arg scenarioType "$scenario_type" \
             --arg bucket "$RESULTS_BUCKET" \
             --arg logGroup "$LOG_GROUP" \
             --arg testRunId "$test_run_id" \
             --argjson startEpoch "$START_EPOCH" \
             --argjson endEpoch "$END_EPOCH" \
-            '{run_id:$runId, results_bucket:$bucket, log_group:$logGroup, test_run_id:($testRunId | if length == 0 then null else . end), query_window:{start_epoch:$startEpoch,end_epoch:$endEpoch}}' \
+            '{run_id:$runId, experiment_id:$experimentId, infrastructure_id:$infrastructureId, infrastructure_revision:$infrastructureRevision, scenario_id:$scenarioId, scenario_type:$scenarioType, results_bucket:$bucket, log_group:$logGroup, test_run_id:($testRunId | if length == 0 then null else . end), query_window:{start_epoch:$startEpoch,end_epoch:$endEpoch}}' \
             > bundle/bundle-metadata.json
 
       - name: Upload analysis bundle
