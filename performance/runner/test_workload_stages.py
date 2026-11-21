@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 K6 = shutil.which(os.environ.get("K6_BIN", "k6"))
 
 
-def staged_profile(name="staged-operating"):
+def staged_profile(name="staged-stress"):
     profile = load_yaml(ROOT / f"fixtures/profiles/{name}.yaml")
     validate_profile(profile)
     return profile
@@ -48,23 +48,21 @@ def iteration_check(summary):
 
 
 class WorkloadStagesTest(unittest.TestCase):
-    def test_operating_and_stress_fixtures_preserve_declared_curve_and_acceptance(self):
-        for name in ("staged-operating", "staged-stress"):
-            with self.subTest(name=name):
-                profile = staged_profile(name)
-                original = copy.deepcopy(profile)
-                environment = _k6_environment(profile, "fixture", 1, "http://localhost")
-                self.assertEqual(profile["workload"]["stages"], json.loads(environment["PERF_STAGES_JSON"]))
-                self.assertNotIn("PERF_RAMP_UP_SECONDS", environment)
-                self.assertNotIn("PERF_DURATION_SECONDS", environment)
-                self.assertEqual(max(stage["concurrent_test_runs"] for stage in profile["workload"]["stages"]),
-                                 profile["workload"]["concurrent_test_runs"])
-                self.assertEqual(original, profile)
+    def test_stress_fixture_preserves_declared_curve_and_acceptance(self):
+        profile = staged_profile("staged-stress")
+        original = copy.deepcopy(profile)
+        environment = _k6_environment(profile, "fixture", 1, "http://localhost")
+        self.assertEqual(profile["workload"]["stages"], json.loads(environment["PERF_STAGES_JSON"]))
+        self.assertNotIn("PERF_RAMP_UP_SECONDS", environment)
+        self.assertNotIn("PERF_DURATION_SECONDS", environment)
+        self.assertEqual(max(stage["concurrent_test_runs"] for stage in profile["workload"]["stages"]),
+                         profile["workload"]["concurrent_test_runs"])
+        self.assertEqual(original, profile)
 
     def test_invalid_stages_fail_before_k6(self):
         invalid = [None, {}, [], [None], [{}],
                    [{"duration_seconds": 1, "concurrent_test_runs": 0}],
-                   [{"duration_seconds": 1, "concurrent_test_runs": 3}],
+                   [{"duration_seconds": 1, "concurrent_test_runs": 4}],
                    [{"duration_seconds": 1, "concurrent_test_runs": 1, "unknown": 1}]]
         for duration in (0, -1, True, "1", None, float("nan"), float("inf"), -float("inf")):
             invalid.append([{"duration_seconds": duration, "concurrent_test_runs": 2}])
@@ -140,7 +138,7 @@ class WorkloadStagesTest(unittest.TestCase):
                 self.assertEqual("PASS", result["status"])
                 self.assertNotIn("completion.iterations", [check["name"] for check in result["checks"]])
 
-    def test_fixed_infrastructure_manifest_supports_operating_and_stress_stage_profiles(self):
+    def test_fixed_infrastructure_manifest_supports_single_target_and_stress_stage_profiles(self):
         base_manifest = yaml.safe_load(
             (ROOT / "fixtures/experiments/mock-small-operating.yaml").read_text(encoding="utf-8")
         )
@@ -148,7 +146,7 @@ class WorkloadStagesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             tmp = Path(directory)
             plans = {}
-            for name in ("staged-operating", "staged-stress"):
+            for name in ("mock-operating", "staged-stress"):
                 manifest = copy.deepcopy(base_manifest)
                 manifest["id"] = f"fixture-{name}"
                 manifest["profile"] = str((ROOT / f"fixtures/profiles/{name}.yaml").resolve())
@@ -157,16 +155,15 @@ class WorkloadStagesTest(unittest.TestCase):
                 manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
                 plans[name] = load_execution_plan(manifest_path).to_dict()
 
-            op_plan = plans["staged-operating"]
+            single_plan = plans["mock-operating"]
             stress_plan = plans["staged-stress"]
-            self.assertEqual(op_plan["infrastructure"], stress_plan["infrastructure"])
-            self.assertEqual(4, len(op_plan["profile"]["workload"]["stages"]))
-            self.assertEqual(2, op_plan["profile"]["workload"]["concurrent_test_runs"])
+            self.assertEqual(single_plan["infrastructure"], stress_plan["infrastructure"])
+            self.assertNotIn("stages", single_plan["profile"]["workload"])
             self.assertEqual(5, len(stress_plan["profile"]["workload"]["stages"]))
             self.assertEqual(3, stress_plan["profile"]["workload"]["concurrent_test_runs"])
 
             bad_profile_path = tmp / "bad-staged-profile.yaml"
-            bad_profile = staged_profile("staged-operating")
+            bad_profile = staged_profile("staged-stress")
             bad_profile["workload"]["stages"] = [{"duration_seconds": 0, "concurrent_test_runs": 2}]
             bad_profile_path.write_text(yaml.safe_dump(bad_profile), encoding="utf-8")
             bad_manifest = copy.deepcopy(base_manifest)
@@ -203,7 +200,7 @@ class WorkloadStagesTest(unittest.TestCase):
 @unittest.skipUnless(K6, "actual k6 binary is not installed")
 class ActualK6StagesTest(unittest.TestCase):
     def test_inspect_uses_exact_fixture_stages_and_grace(self):
-        for name in ("staged-operating", "staged-stress"):
+        for name in ("staged-stress",):
             with self.subTest(name=name):
                 profile = staged_profile(name)
                 environment = self._environment(profile)
