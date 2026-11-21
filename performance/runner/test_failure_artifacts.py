@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -18,17 +20,19 @@ import yaml
 from botocore.exceptions import ClientError
 
 from performance.runner import cli
+from performance.runner.aws import InfrastructureCapacityCollector
 from performance.runner.config import ConfigurationError
 from performance.runner.failure import RunContext, preserve_failure, sanitize_message
+from performance.runner.plan import load_execution_plan
 from performance.runner.storage import (
     FAILURE_FILENAME,
-    OPTIONAL_RESULT_FILENAMES,
     RESULT_FILENAMES,
     UPLOAD_COMPLETE_FILENAME,
     ResultUploadError,
     upload_failure_directory,
     upload_result_directory,
 )
+from performance.runner.test_capacity import MANIFEST, clients
 from performance.runner.test_runner import passing_summary
 
 
@@ -65,13 +69,30 @@ class FailureArtifactsTest(unittest.TestCase):
             "APP_REVISION": "app-sha",
             "INFRA_REVISION": "infra-sha",
             "PERF_BASE_URL": "https://api.example.test",
-            "PERF_EXPECTED_WORK_ITEMS_CONCURRENCY": "2",
-            "PERF_EXPECTED_ECS_TASK_COUNT": "1",
-            "PERF_TARGET_URL": "https://target.example.test/v1/chat/completions",
-            "PERF_TARGET_MODEL": "model",
-            "PERF_TARGET_REVISION": "target-sha",
             "PERFORMANCE_RESULTS_BUCKET": "perf-results-bucket",
         }
+        manifest = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+        self.profile_path = self.temp_dir / "profile.yaml"
+        self.dataset_path = self.temp_dir / "dataset.yaml"
+        shutil.copyfile(MANIFEST.parent / manifest["profile"], self.profile_path)
+        shutil.copyfile(MANIFEST.parent / manifest["dataset"], self.dataset_path)
+        manifest["profile"] = str(self.profile_path)
+        manifest["dataset"] = str(self.dataset_path)
+        self.manifest_path = self.temp_dir / "experiment.yaml"
+        self.manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+        expected = load_execution_plan(self.manifest_path).to_dict()["infrastructure"]["expected"]
+        ecs_client, rds_client, sm_client, _, _ = clients(expected)
+        self.observed_capacity = InfrastructureCapacityCollector(
+            ecs_client=ecs_client, rds_client=rds_client, sagemaker_client=sm_client).collect(expected=expected)
+
+    def _argv(self, result_dir: Path, *extra: str) -> list[str]:
+        return ["--experiment", str(self.manifest_path), "--result-dir", str(result_dir), *extra]
+
+    def _args(self, result_dir: Path, *extra: str):
+        return cli.parser().parse_args(self._argv(result_dir, *extra))
+
+    def _observed_capacity(self) -> dict:
+        return copy.deepcopy(self.observed_capacity)
 
     def _enter_runner_mocks(self, *, s3_client: FakeS3Client | None = None, env_overrides: dict[str, str] | None = None):
         env = dict(self.base_env)
@@ -108,26 +129,7 @@ class FailureArtifactsTest(unittest.TestCase):
         }
 
         capacity = self.stack.enter_context(patch.object(cli, "InfrastructureCapacityCollector")).return_value
-        capacity.collect.return_value = {
-            "captured_at": "2026-09-05T00:00:00Z",
-            "ecs": {
-                "cluster_identifier": "cluster",
-                "service_identifier": "service",
-                "desired_count": 1,
-                "running_task_count": 1,
-                "task_cpu": "256",
-                "task_memory": "512",
-                "work_items_concurrency": 2,
-            },
-            "rds": {"db_instance_identifier": "perf", "db_instance_class": "db.t4g.micro"},
-            "sagemaker": {
-                "endpoint_name": "classifier",
-                "production_variant_name": "AllTraffic",
-                "instance_type": "ml.m5.large",
-                "desired_instance_count": 1,
-                "current_instance_count": 1,
-            },
-        }
+        capacity.collect.return_value = self._observed_capacity()
 
         def default_k6(*args):
             args[4].write_text(json.dumps(passing_summary()), encoding="utf-8")
@@ -141,7 +143,7 @@ class FailureArtifactsTest(unittest.TestCase):
         target = result_dir or self.result_dir
         return json.loads((target / FAILURE_FILENAME).read_text(encoding="utf-8"))
 
-    def test_early_nonexistent_profile_writes_failure_json_and_uploads_to_failure_prefix(self):
+    def test_early_missing_experiment_writes_failure_json_and_uploads_to_failure_prefix(self):
         fake_s3 = FakeS3Client()
         self.stack.enter_context(patch("performance.runner.storage.boto3.client", return_value=fake_s3))
         self.stack.enter_context(
@@ -155,8 +157,8 @@ class FailureArtifactsTest(unittest.TestCase):
                 clear=True,
             )
         )
-        missing_profile = self.temp_dir / "does-not-exist.yaml"
-        args = cli.parser().parse_args(["--profile", str(missing_profile), "--result-dir", str(self.result_dir)])
+        missing_manifest = self.temp_dir / "does-not-exist.yaml"
+        args = cli.parser().parse_args(["--experiment", str(missing_manifest), "--result-dir", str(self.result_dir)])
 
         with self.assertRaises(ConfigurationError):
             cli.execute(args)
@@ -168,76 +170,52 @@ class FailureArtifactsTest(unittest.TestCase):
         self.assertTrue(failure["run_id"].startswith("preflight-error-"))
         self.assertEqual("ConfigurationError", failure["error"]["type"])
         self.assertEqual({"application": "app-sha"}, failure["revisions"])
-        self.assertEqual(str(missing_profile.resolve()), failure["inputs"]["profile_path"])
-        self.assertEqual(["dataset.yaml", "failure.json"], failure["available_artifacts"])
+        self.assertEqual(str(missing_manifest.resolve()), failure["inputs"]["experiment_path"])
+        self.assertEqual(["failure.json"], failure["available_artifacts"])
         self.assertEqual([], failure["preservation_errors"])
-        self.assertTrue((self.result_dir / "dataset.yaml").is_file())
-        for missing_name in ("profile.yaml", "k6-summary.json", "aws-metrics.json", "result.json", "report.md"):
+        for missing_name in RESULT_FILENAMES:
             self.assertFalse((self.result_dir / missing_name).exists())
+        self.assertEqual({f"performance/failures/{failure['run_id']}/failure.json"}, set(fake_s3.objects))
 
-        uploaded_keys = set(fake_s3.objects)
-        self.assertEqual(
-            {
-                f"performance/failures/{failure['run_id']}/failure.json",
-                f"performance/failures/{failure['run_id']}/dataset.yaml",
-            },
-            uploaded_keys,
-        )
+    def test_early_invalid_plan_inputs_preserve_experiment_and_failure_json(self):
+        manifest = yaml.safe_load(self.manifest_path.read_text(encoding="utf-8"))
+        malformed_manifest = self.temp_dir / "malformed.yaml"
+        malformed_manifest.write_text("schema_version: [\n", encoding="utf-8")
+        env_profile = yaml.safe_load(self.profile_path.read_text(encoding="utf-8"))
+        env_profile["target"]["identifier"] = "${PERF_TARGET_URL}"
+        env_profile_path = self.temp_dir / "env-profile.yaml"
+        env_profile_path.write_text(yaml.safe_dump(env_profile), encoding="utf-8")
 
-    def test_early_malformed_yaml_and_missing_target_env_preserve_failure_json(self):
-        bad_profile = self.temp_dir / "malformed.yaml"
-        bad_profile.write_text("test: [\n", encoding="utf-8")
+        def manifest_with(**changes) -> Path:
+            path = self.temp_dir / f"manifest-{len(changes)}-{'-'.join(changes)}.yaml"
+            path.write_text(yaml.safe_dump({**manifest, **changes}), encoding="utf-8")
+            return path
 
         cases = [
-            ("malformed_yaml", bad_profile, {"APP_REVISION": "app-sha"}),
-            ("missing_target_env", REPO_ROOT / "performance/profiles/smoke.yaml", {"APP_REVISION": "app-sha"}),
+            ("malformed_yaml", malformed_manifest),
+            ("missing_target_env", manifest_with(profile=str(env_profile_path))),
+            ("missing_dataset", manifest_with(dataset=str(self.temp_dir / "missing-dataset.yaml"))),
         ]
-        for label, profile_path, env in cases:
+        for label, manifest_path in cases:
             with self.subTest(label=label):
                 fake_s3 = FakeS3Client()
                 sub_dir = self.temp_dir / f"early-{label}"
                 with (
                     patch("performance.runner.storage.boto3.client", return_value=fake_s3),
-                    patch.dict(os.environ, env, clear=True),
+                    patch.dict(os.environ, {"APP_REVISION": "app-sha",
+                                            "PERFORMANCE_RESULTS_BUCKET": "perf-results-bucket"}, clear=True),
                 ):
-                    args = cli.parser().parse_args(["--profile", str(profile_path), "--result-dir", str(sub_dir)])
+                    args = cli.parser().parse_args(["--experiment", str(manifest_path), "--result-dir", str(sub_dir)])
                     with self.assertRaises(ConfigurationError):
                         cli.execute(args)
 
                 failure = self._read_failure(sub_dir)
                 self.assertEqual("preflight", failure["phase"])
                 self.assertTrue(failure["run_id"].startswith("preflight-error-"))
-                self.assertEqual(["dataset.yaml", "failure.json", "profile.yaml"], failure["available_artifacts"])
+                self.assertEqual(["experiment.yaml", "failure.json"], failure["available_artifacts"])
+                self.assertEqual(manifest_path.read_bytes(), (sub_dir / "experiment.yaml").read_bytes())
+                self.assertIn(f"performance/failures/{failure['run_id']}/experiment.yaml", fake_s3.objects)
                 self.assertFalse((sub_dir / "result.json").exists())
-
-    def test_early_invalid_dataset_after_valid_profile_uses_profile_run_id(self):
-        fake_s3 = FakeS3Client()
-        missing_dataset = self.temp_dir / "missing-dataset.yaml"
-        with (
-            patch("performance.runner.storage.boto3.client", return_value=fake_s3),
-            patch.dict(
-                os.environ,
-                {
-                    "APP_REVISION": "app-sha",
-                    "INFRA_REVISION": "infra-sha",
-                    "PERF_TARGET_URL": "https://target.example.test/v1/chat/completions",
-                    "PERF_TARGET_MODEL": "model",
-                    "PERF_TARGET_REVISION": "target-sha",
-                    "PERFORMANCE_RESULTS_BUCKET": "perf-results-bucket",
-                },
-                clear=True,
-            ),
-        ):
-            args = cli.parser().parse_args(["--dataset", str(missing_dataset), "--result-dir", str(self.result_dir)])
-            with self.assertRaises(ConfigurationError):
-                cli.execute(args)
-
-        failure = self._read_failure()
-        self.assertTrue(failure["run_id"].startswith("PERF-SMOKE-01-"))
-        self.assertEqual("PERF-SMOKE-01", failure["inputs"]["profile_id"])
-        self.assertEqual("SMOKE", failure["inputs"]["profile_type"])
-        self.assertEqual(["failure.json", "profile.yaml"], failure["available_artifacts"])
-        self.assertIn(f"performance/failures/{failure['run_id']}/profile.yaml", fake_s3.objects)
 
     def test_existing_result_dir_is_never_overwritten_and_prints_both_errors_to_stderr(self):
         existing_early = self.temp_dir / "existing-early"
@@ -245,13 +223,13 @@ class FailureArtifactsTest(unittest.TestCase):
         sentinel_early = existing_early / "sentinel.txt"
         sentinel_early.write_text("do-not-overwrite", encoding="utf-8")
 
-        missing_profile = self.temp_dir / "missing-profile.yaml"
+        missing_manifest = self.temp_dir / "missing-experiment.yaml"
         stderr_early = io.StringIO()
         with (
             patch.dict(os.environ, {"APP_REVISION": "app-sha"}, clear=True),
             redirect_stderr(stderr_early),
         ):
-            code = cli.main(["--profile", str(missing_profile), "--result-dir", str(existing_early)])
+            code = cli.main(["--experiment", str(missing_manifest), "--result-dir", str(existing_early)])
 
         self.assertEqual(2, code)
         self.assertEqual("do-not-overwrite", sentinel_early.read_text(encoding="utf-8"))
@@ -269,18 +247,10 @@ class FailureArtifactsTest(unittest.TestCase):
 
         stderr_post = io.StringIO()
         with (
-            patch.dict(
-                os.environ,
-                {
-                    "PERF_TARGET_URL": "https://target.example.test/v1/chat/completions",
-                    "PERF_TARGET_MODEL": "model",
-                    "PERF_TARGET_REVISION": "target-sha",
-                },
-                clear=True,
-            ),
+            patch.dict(os.environ, {}, clear=True),
             redirect_stderr(stderr_post),
         ):
-            code_post = cli.main(["--result-dir", str(existing_post)])
+            code_post = cli.main(self._argv(existing_post))
 
         self.assertEqual(2, code_post)
         self.assertEqual("keep-me", sentinel_post.read_text(encoding="utf-8"))
@@ -308,9 +278,9 @@ class FailureArtifactsTest(unittest.TestCase):
             ),
             (
                 "capacity_mismatch",
-                {"PERF_EXPECTED_ECS_TASK_COUNT": "3"},
-                cli.RunnerError,
                 None,
+                ConfigurationError,
+                lambda api, ins, met, cap: cap.collect.return_value["ecs"]["worker"].update(desired_count=3),
             ),
         ]
         for label, env_override, exc_type, mutator in scenarios:
@@ -334,13 +304,11 @@ class FailureArtifactsTest(unittest.TestCase):
                 ins.is_empty.return_value = True
                 met = sub_stack.enter_context(patch.object(cli, "CloudWatchMetricCollector")).return_value
                 cap = sub_stack.enter_context(patch.object(cli, "InfrastructureCapacityCollector")).return_value
-                cap.collect.return_value = {
-                    "ecs": {"desired_count": 1, "running_task_count": 1, "work_items_concurrency": 2}
-                }
+                cap.collect.return_value = self._observed_capacity()
                 if mutator:
                     mutator(api, ins, met, cap)
 
-                args = cli.parser().parse_args(["--result-dir", str(sub_dir)])
+                args = self._args(sub_dir)
                 with self.assertRaises(exc_type):
                     cli.execute(args)
 
@@ -376,21 +344,27 @@ class FailureArtifactsTest(unittest.TestCase):
                 ins.is_empty.return_value = True
                 sub_stack.enter_context(patch.object(cli, "CloudWatchMetricCollector"))
                 cap = sub_stack.enter_context(patch.object(cli, "InfrastructureCapacityCollector")).return_value
-                cap.collect.return_value = {
-                    "ecs": {"desired_count": 1, "running_task_count": 1, "work_items_concurrency": 2}
-                }
+                cap.collect.return_value = self._observed_capacity()
                 k6 = sub_stack.enter_context(patch.object(cli, "run_k6"))
 
-                args = cli.parser().parse_args(["--result-dir", str(sub_dir)])
+                args = self._args(sub_dir)
                 with self.assertRaises(exc_type):
                     cli.execute(args)
 
                 k6.assert_not_called()
                 failure = self._read_failure(sub_dir)
                 self.assertEqual("seed", failure["phase"])
-                self.assertEqual("PERF-SMOKE-01", failure["inputs"]["profile_id"])
-                self.assertEqual("baseline-v1", failure["inputs"]["dataset_id"])
-                self.assertEqual(78, failure["inputs"]["test_case_count"])
+                self.assertEqual("FIXTURE-OPERATING", failure["inputs"]["profile_id"])
+                self.assertEqual("LOAD", failure["inputs"]["profile_type"])
+                self.assertEqual("fixture-two-cases-v1", failure["inputs"]["dataset_id"])
+                self.assertEqual(2, failure["inputs"]["test_case_count"])
+                self.assertEqual("fixture-small-operating", failure["inputs"]["experiment_id"])
+                self.assertEqual("fixture-small", failure["inputs"]["infrastructure_id"])
+                self.assertEqual("fixture-v1", failure["inputs"]["infrastructure_revision"])
+                self.assertEqual(str(self.manifest_path.resolve()), failure["inputs"]["experiment_path"])
+                self.assertEqual(str(self.profile_path.resolve()), failure["inputs"]["profile_path"])
+                for name in ("experiment.yaml", "profile.yaml", "dataset.yaml", "execution-plan.json"):
+                    self.assertIn(name, failure["available_artifacts"])
                 self.assertNotIn("suite_id", failure["inputs"])
                 self.assertIn(f"performance/failures/{failure['run_id']}/failure.json", fake_s3.objects)
 
@@ -400,7 +374,7 @@ class FailureArtifactsTest(unittest.TestCase):
         dir_a = self.temp_dir / "k6-no-summary"
         k6_a.side_effect = cli.RunnerError("k6 script 또는 실행 환경 오류로 종료되었습니다 (exit 1).")
         with self.assertRaises(cli.RunnerError):
-            cli.execute(cli.parser().parse_args(["--result-dir", str(dir_a)]))
+            cli.execute(self._args(dir_a))
         failure_a = self._read_failure(dir_a)
         self.assertEqual("k6", failure_a["phase"])
         self.assertEqual(7, failure_a["inputs"]["suite_id"])
@@ -414,7 +388,7 @@ class FailureArtifactsTest(unittest.TestCase):
             raise cli.RunnerError("k6 script 또는 실행 환경 오류로 종료되었습니다 (exit 1).")
         k6_a.side_effect = partial_k6
         with self.assertRaises(cli.RunnerError):
-            cli.execute(cli.parser().parse_args(["--result-dir", str(dir_b)]))
+            cli.execute(self._args(dir_b))
         failure_b = self._read_failure(dir_b)
         self.assertEqual("k6", failure_b["phase"])
         self.assertIn("k6-summary.json", failure_b["available_artifacts"])
@@ -427,7 +401,7 @@ class FailureArtifactsTest(unittest.TestCase):
             return 0
         k6_a.side_effect = corrupt_k6
         with self.assertRaises(cli.RunnerError):
-            cli.execute(cli.parser().parse_args(["--result-dir", str(dir_c)]))
+            cli.execute(self._args(dir_c))
         failure_c = self._read_failure(dir_c)
         self.assertEqual("k6", failure_c["phase"])
         self.assertIn("k6-summary.json", failure_c["available_artifacts"])
@@ -442,7 +416,7 @@ class FailureArtifactsTest(unittest.TestCase):
         api.list_runs.side_effect = [[], cli.ApiError("drain query failed")]
         dir_drain = self.temp_dir / "drain-fail"
         with self.assertRaises(cli.ApiError):
-            cli.execute(cli.parser().parse_args(["--result-dir", str(dir_drain)]))
+            cli.execute(self._args(dir_drain))
         failure_drain = self._read_failure(dir_drain)
         self.assertEqual("drain", failure_drain["phase"])
         self.assertIn("k6-summary.json", failure_drain["available_artifacts"])
@@ -455,7 +429,7 @@ class FailureArtifactsTest(unittest.TestCase):
         metrics.collect.side_effect = ConfigurationError("cloudwatch unavailable")
         dir_metrics = self.temp_dir / "metrics-fail"
         with self.assertRaises(ConfigurationError):
-            cli.execute(cli.parser().parse_args(["--result-dir", str(dir_metrics)]))
+            cli.execute(self._args(dir_metrics))
         failure_metrics = self._read_failure(dir_metrics)
         self.assertEqual("metrics", failure_metrics["phase"])
         self.assertIn("k6-summary.json", failure_metrics["available_artifacts"])
@@ -466,7 +440,7 @@ class FailureArtifactsTest(unittest.TestCase):
         api.list_runs.side_effect = [[], [], cli.ApiError("diagnostics failed")]
         dir_report_api = self.temp_dir / "report-api-fail"
         with self.assertRaises(cli.ApiError):
-            cli.execute(cli.parser().parse_args(["--result-dir", str(dir_report_api)]))
+            cli.execute(self._args(dir_report_api))
         failure_report_api = self._read_failure(dir_report_api)
         self.assertEqual("report", failure_report_api["phase"])
         self.assertIn("k6-summary.json", failure_report_api["available_artifacts"])
@@ -480,7 +454,7 @@ class FailureArtifactsTest(unittest.TestCase):
         dir_report_fmt = self.temp_dir / "report-fmt-fail"
         with patch.object(cli, "_report", side_effect=RuntimeError("template boom")):
             with self.assertRaises(RuntimeError):
-                cli.execute(cli.parser().parse_args(["--result-dir", str(dir_report_fmt)]))
+                cli.execute(self._args(dir_report_fmt))
         failure_report_fmt = self._read_failure(dir_report_fmt)
         self.assertEqual("report", failure_report_fmt["phase"])
         self.assertFalse((dir_report_fmt / "result.json").exists())
@@ -513,26 +487,7 @@ class FailureArtifactsTest(unittest.TestCase):
                     ],
                 }
                 cap = sub_stack.enter_context(patch.object(cli, "InfrastructureCapacityCollector")).return_value
-                cap.collect.return_value = {
-                    "captured_at": "2026-09-05T00:00:00Z",
-                    "ecs": {
-                        "cluster_identifier": "cluster",
-                        "service_identifier": "service",
-                        "desired_count": 1,
-                        "running_task_count": 1,
-                        "task_cpu": "256",
-                        "task_memory": "512",
-                        "work_items_concurrency": 2,
-                    },
-                    "rds": {"db_instance_identifier": "perf", "db_instance_class": "db.t4g.micro"},
-                    "sagemaker": {
-                        "endpoint_name": "classifier",
-                        "production_variant_name": "AllTraffic",
-                        "instance_type": "ml.m5.large",
-                        "desired_instance_count": 1,
-                        "current_instance_count": 1,
-                    },
-                }
+                cap.collect.return_value = self._observed_capacity()
 
                 def write_summary(*args, exit_code=k6_exit):
                     args[4].write_text(json.dumps(passing_summary()), encoding="utf-8")
@@ -541,7 +496,7 @@ class FailureArtifactsTest(unittest.TestCase):
                 sub_stack.enter_context(patch.object(cli, "run_k6", side_effect=write_summary))
                 stdout_buf = io.StringIO()
                 with redirect_stdout(stdout_buf):
-                    code = cli.main(["--result-dir", str(sub_dir)])
+                    code = cli.main(self._argv(sub_dir))
 
                 self.assertEqual(expected_cli_code, code)
                 self.assertFalse((sub_dir / FAILURE_FILENAME).exists())
@@ -598,26 +553,7 @@ class FailureArtifactsTest(unittest.TestCase):
                     ],
                 }
                 cap = sub_stack.enter_context(patch.object(cli, "InfrastructureCapacityCollector")).return_value
-                cap.collect.return_value = {
-                    "captured_at": "2026-09-05T00:00:00Z",
-                    "ecs": {
-                        "cluster_identifier": "cluster",
-                        "service_identifier": "service",
-                        "desired_count": 1,
-                        "running_task_count": 1,
-                        "task_cpu": "256",
-                        "task_memory": "512",
-                        "work_items_concurrency": 2,
-                    },
-                    "rds": {"db_instance_identifier": "perf", "db_instance_class": "db.t4g.micro"},
-                    "sagemaker": {
-                        "endpoint_name": "classifier",
-                        "production_variant_name": "AllTraffic",
-                        "instance_type": "ml.m5.large",
-                        "desired_instance_count": 1,
-                        "current_instance_count": 1,
-                    },
-                }
+                cap.collect.return_value = self._observed_capacity()
 
                 def write_summary(*args, exit_code=k6_exit):
                     args[4].write_text(json.dumps(passing_summary()), encoding="utf-8")
@@ -626,7 +562,7 @@ class FailureArtifactsTest(unittest.TestCase):
                 sub_stack.enter_context(patch.object(cli, "run_k6", side_effect=write_summary))
                 stderr_buf = io.StringIO()
                 with redirect_stderr(stderr_buf):
-                    code = cli.main(["--result-dir", str(sub_dir)])
+                    code = cli.main(self._argv(sub_dir))
 
                 self.assertEqual(2, code)
                 local_result = json.loads((sub_dir / "result.json").read_text(encoding="utf-8"))
@@ -650,7 +586,7 @@ class FailureArtifactsTest(unittest.TestCase):
         stderr_s3 = io.StringIO()
         with redirect_stderr(stderr_s3):
             with self.assertRaisesRegex(cli.RunnerError, "k6 original cause failure"):
-                cli.execute(cli.parser().parse_args(["--result-dir", str(dir_s3_fail)]))
+                cli.execute(self._args(dir_s3_fail))
 
         failure = self._read_failure(dir_s3_fail)
         self.assertEqual("k6", failure["phase"])
@@ -676,7 +612,7 @@ class FailureArtifactsTest(unittest.TestCase):
             redirect_stderr(stderr_write),
         ):
             with self.assertRaisesRegex(cli.RunnerError, "k6 original cause failure"):
-                cli.execute(cli.parser().parse_args(["--result-dir", str(dir_write_fail)]))
+                cli.execute(self._args(dir_write_fail))
 
         self.assertIn("k6 original cause failure", stderr_write.getvalue())
         self.assertIn("write_failure_artifact(OSError: disk full)", stderr_write.getvalue())
@@ -744,7 +680,7 @@ class FailureArtifactsTest(unittest.TestCase):
             "failed calling https://admin:secretpw@api.example.test with Bearer my-token-123"
         )
         with self.assertRaises(cli.ApiError):
-            cli.execute(cli.parser().parse_args(["--result-dir", str(self.result_dir)]))
+            cli.execute(self._args(self.result_dir))
         raw_failure_text = (self.result_dir / FAILURE_FILENAME).read_text(encoding="utf-8")
         for secret in (
             "super-secret-aws-key",
@@ -763,7 +699,8 @@ class FailureArtifactsTest(unittest.TestCase):
             patch("performance.runner.storage.boto3.client", return_value=dry_s3),
             patch.dict(os.environ, {"PERFORMANCE_RESULTS_BUCKET": "perf-results-bucket"}, clear=True),
         ):
-            args = cli.parser().parse_args(["--dry-run", "--result-dir", str(dry_dir)])
+            args = cli.parser().parse_args(["--experiment", str(self.temp_dir / "missing.yaml"),
+                                            "--dry-run", "--result-dir", str(dry_dir)])
             with self.assertRaises(ConfigurationError):
                 cli.execute(args)
         self.assertFalse(dry_dir.exists())
@@ -775,12 +712,12 @@ class FailureArtifactsTest(unittest.TestCase):
             patch.object(cli, "execute", side_effect=RuntimeError("token=secret-value boom")),
             redirect_stderr(io.StringIO()) as err,
         ):
-            code = cli.main(["--result-dir", str(self.result_dir)])
+            code = cli.main(self._argv(self.result_dir))
         self.assertEqual(2, code)
         self.assertIn("ERROR: RuntimeError:", err.getvalue())
         self.assertNotIn("secret-value", err.getvalue())
 
-    def test_analysis_bundle_workflow_script_handles_markers_legacy_and_failures(self):
+    def test_analysis_bundle_workflow_script_requires_markers_hashes_and_rejects_legacy(self):
         workflow = yaml.safe_load(
             (REPO_ROOT / ".github/workflows/performance-analysis-bundle.yml").read_text(encoding="utf-8")
         )
@@ -850,69 +787,85 @@ sys.exit(1)
                 )
                 return completed, summary_file.read_text(encoding="utf-8")
 
-        def write_canonical(prefix: Path, *, schema_version_mode: str = "v2", include_marker: bool = True, run_id: str = "smoke-run-1"):
+        def write_canonical(prefix: Path, run_id: str, *, result_doc: dict | None = None, include_marker: bool = True,
+                            include_hashes: bool = True, omit_file: str | None = None, undeclared: str | None = None,
+                            corrupt_hash: str | None = None):
             prefix.mkdir(parents=True, exist_ok=True)
-            (prefix / "profile.yaml").write_text("test: {}", encoding="utf-8")
-            (prefix / "dataset.yaml").write_text("id: baseline", encoding="utf-8")
-            (prefix / "k6-summary.json").write_text("{}", encoding="utf-8")
-            (prefix / "aws-metrics.json").write_text("{}", encoding="utf-8")
-            (prefix / "report.md").write_text("# report", encoding="utf-8")
-            if schema_version_mode == "v2":
-                result_doc = {"schema_version": 2, "run_id": run_id}
-            elif schema_version_mode == "malformed":
-                result_doc = {"schema_version": None, "run_id": run_id}
-            else:
-                result_doc = {"run_id": run_id}
-            (prefix / "result.json").write_text(json.dumps(result_doc), encoding="utf-8")
-            if include_marker:
-                marker = {
-                    "schema_version": 1,
-                    "run_id": run_id,
-                    "status": "COMPLETE",
-                    "completed_at": "2026-11-20T00:00:00Z",
-                    "files": list(RESULT_FILENAMES),
+            contents = {
+                "experiment.yaml": "schema_version: 1\nid: exp-1\n",
+                "profile.yaml": "test: {}",
+                "dataset.yaml": "id: baseline",
+                "execution-plan.json": '{"schema_version": 1}\n',
+                "k6-summary.json": "{}",
+                "aws-metrics.json": "{}",
+                "result.json": json.dumps(result_doc if result_doc is not None else {"schema_version": 2, "run_id": run_id}),
+                "report.md": "# report",
+            }
+            for name, content in contents.items():
+                if name != omit_file:
+                    (prefix / name).write_text(content, encoding="utf-8")
+            if not include_marker:
+                return
+            declared = [name for name in RESULT_FILENAMES if name != undeclared]
+            marker = {"schema_version": 1, "run_id": run_id, "status": "COMPLETE",
+                      "completed_at": "2026-11-20T00:00:00Z", "files": declared}
+            if include_hashes:
+                marker["file_sha256"] = {
+                    name: hashlib.sha256((prefix / name).read_bytes()).hexdigest() if (prefix / name).is_file() else "0" * 64
+                    for name in declared
                 }
-                (prefix / UPLOAD_COMPLETE_FILENAME).write_text(json.dumps(marker), encoding="utf-8")
+                if corrupt_hash:
+                    marker["file_sha256"][corrupt_hash] = "f" * 64
+            (prefix / UPLOAD_COMPLETE_FILENAME).write_text(json.dumps(marker), encoding="utf-8")
 
-        # 1. Valid schema_version=2 with upload-complete.json
-        res, summary = run_download(lambda rp, fp, rid: write_canonical(rp, schema_version_mode="v2", include_marker=True, run_id=rid))
+        def expect_rejected(setup, message):
+            res, _ = run_download(setup)
+            self.assertEqual(1, res.returncode, res.stderr)
+            self.assertIn(message, res.stderr)
+
+        # 1. Complete schema_version=2 publication with marker and matching digests -> bundled
+        res, summary = run_download(lambda rp, fp, rid: write_canonical(rp, rid))
         self.assertEqual(0, res.returncode, res.stderr)
         self.assertIn("Downloaded s3://test-bucket/performance/results/smoke-run-1/", summary)
 
-        # 2. schema_version=2 missing upload-complete.json -> rejected (not treated as legacy)
-        res, _ = run_download(lambda rp, fp, rid: write_canonical(rp, schema_version_mode="v2", include_marker=False, run_id=rid))
-        self.assertEqual(1, res.returncode)
-        self.assertIn("upload-complete.json is missing", res.stderr)
+        # 2. Missing marker, mismatched run_id or missing file_sha256 -> rejected
+        expect_rejected(lambda rp, fp, rid: write_canonical(rp, rid, include_marker=False),
+                        "upload-complete.json is missing")
+        expect_rejected(lambda rp, fp, rid: write_canonical(rp, "other-run", result_doc={"schema_version": 2, "run_id": rid}),
+                        "upload-complete.json is invalid")
+        expect_rejected(lambda rp, fp, rid: write_canonical(rp, rid, include_hashes=False),
+                        "upload-complete.json is invalid")
 
-        # 3. schema_version=2 with mismatched run_id in upload-complete.json -> rejected
-        def setup_bad_marker(rp: Path, fp: Path, rid: str):
-            write_canonical(rp, schema_version_mode="v2", include_marker=False, run_id=rid)
-            (rp / UPLOAD_COMPLETE_FILENAME).write_text(
-                json.dumps({"schema_version": 1, "run_id": "other-run", "status": "COMPLETE", "files": list(RESULT_FILENAMES)}),
-                encoding="utf-8",
-            )
+        # 3. Schema-less or malformed result.json is no longer analyzed, even with a marker
+        for result_doc in ({"run_id": "smoke-run-1"}, {"schema_version": None, "run_id": "smoke-run-1"},
+                           {"schema_version": 1, "run_id": "smoke-run-1"}):
+            with self.subTest(result_doc=result_doc):
+                expect_rejected(lambda rp, fp, rid, doc=result_doc: write_canonical(rp, rid, result_doc=doc),
+                                "schema-less results are not analyzed")
 
-        res, _ = run_download(setup_bad_marker)
-        self.assertEqual(1, res.returncode)
-        self.assertIn("upload-complete.json is invalid", res.stderr)
-
-        # 4. Malformed schema_version (null) without marker -> rejected (not treated as legacy)
-        res, _ = run_download(lambda rp, fp, rid: write_canonical(rp, schema_version_mode="malformed", include_marker=False, run_id=rid))
-        self.assertEqual(1, res.returncode)
-        self.assertIn("upload-complete.json is missing", res.stderr)
-
-        # 5. Historical schema-less result.json (4 canonical files, no marker) -> allowed
+        # 4. Historical schema-less layout (4 files, no inputs or marker) -> rejected as incomplete
         def setup_legacy(rp: Path, fp: Path, rid: str):
             rp.mkdir(parents=True, exist_ok=True)
             (rp / "result.json").write_text(json.dumps({"run_id": rid}), encoding="utf-8")
-            (rp / "report.md").write_text("# legacy report", encoding="utf-8")
-            (rp / "k6-summary.json").write_text("{}", encoding="utf-8")
-            (rp / "aws-metrics.json").write_text("{}", encoding="utf-8")
+            for name in ("report.md", "k6-summary.json", "aws-metrics.json"):
+                (rp / name).write_text("{}", encoding="utf-8")
 
-        res, _ = run_download(setup_legacy)
-        self.assertEqual(0, res.returncode, res.stderr)
+        expect_rejected(setup_legacy, "missing or empty canonical Runner files")
 
-        # 6. Incomplete canonical files + failure.json in failures prefix -> exits 1 with guidance
+        # 5. Required run inputs missing from S3 or from the marker declaration -> rejected
+        for name in ("experiment.yaml", "execution-plan.json"):
+            with self.subTest(missing=name):
+                expect_rejected(lambda rp, fp, rid, n=name: write_canonical(rp, rid, omit_file=n), name)
+                expect_rejected(lambda rp, fp, rid, n=name: write_canonical(rp, rid, undeclared=n),
+                                f"does not declare required artifact '{name}'")
+
+        # 6. Digest mismatch on any declared file (core or input) -> rejected
+        for name in ("result.json", "experiment.yaml"):
+            with self.subTest(corrupt=name):
+                expect_rejected(lambda rp, fp, rid, n=name: write_canonical(rp, rid, corrupt_hash=n),
+                                f"SHA-256 mismatch for s3://test-bucket/performance/results/smoke-run-1/{name}")
+
+        # 7. Incomplete canonical files + failure.json in failures prefix -> exits 1 with guidance
         def setup_failed_run(rp: Path, fp: Path, rid: str):
             fp.mkdir(parents=True, exist_ok=True)
             (fp / FAILURE_FILENAME).write_text(
@@ -928,117 +881,53 @@ sys.exit(1)
         self.assertIn("phase: `k6`", summary)
         self.assertIn("error: `RunnerError`", summary)
 
-        # 7. Canonical prefix containing failure.json -> rejected
+        # 8. Canonical prefix containing failure.json -> rejected
         def setup_contaminated(rp: Path, fp: Path, rid: str):
-            write_canonical(rp, schema_version_mode="v2", include_marker=True, run_id=rid)
+            write_canonical(rp, rid)
             (rp / FAILURE_FILENAME).write_text("{}", encoding="utf-8")
 
-        res, _ = run_download(setup_contaminated)
-        self.assertEqual(1, res.returncode)
-        self.assertIn("contains failure.json", res.stderr)
+        expect_rejected(setup_contaminated, "contains failure.json")
 
-        def write_optional_with_hashes(rp: Path, rid: str, *, include_plan_file: bool = True, corrupt_hash: bool = False):
-            write_canonical(rp, schema_version_mode="v2", include_marker=False, run_id=rid)
-            (rp / "experiment.yaml").write_text("schema_version: 1\nid: exp-1\n", encoding="utf-8")
-            declared = [*RESULT_FILENAMES, "experiment.yaml", "execution-plan.json"]
-            if include_plan_file:
-                (rp / "execution-plan.json").write_text('{"schema_version": 1}\n', encoding="utf-8")
-            hashes = {}
-            for name in declared:
-                target = rp / name
-                if target.is_file():
-                    hashes[name] = hashlib.sha256(target.read_bytes()).hexdigest()
-                else:
-                    hashes[name] = "0" * 64
-            if corrupt_hash:
-                hashes["result.json"] = "f" * 64
-            marker = {
-                "schema_version": 1,
-                "run_id": rid,
-                "status": "COMPLETE",
-                "completed_at": "2026-11-20T00:00:00Z",
-                "files": declared,
-                "file_sha256": hashes,
-            }
-            (rp / UPLOAD_COMPLETE_FILENAME).write_text(json.dumps(marker), encoding="utf-8")
+    def test_completed_upload_requires_run_inputs_and_hashes_every_file(self):
+        def populate(directory: Path, *, skip: str | None = None) -> None:
+            directory.mkdir()
+            for name in RESULT_FILENAMES:
+                if name == skip:
+                    continue
+                content = '{"schema_version": 2}' if name == "result.json" else f"content:{name}"
+                (directory / name).write_text(content, encoding="utf-8")
 
-        # 8. schema_version=2 with optional experiment.yaml + execution-plan.json and matching file_sha256 -> passes
-        res, summary = run_download(lambda rp, fp, rid: write_optional_with_hashes(rp, rid))
-        self.assertEqual(0, res.returncode, res.stderr)
-        self.assertIn("Downloaded s3://test-bucket/performance/results/smoke-run-1/", summary)
-
-        # 9. schema_version=2 declaring execution-plan.json in upload-complete.json when missing from S3 -> rejected
-        res, _ = run_download(lambda rp, fp, rid: write_optional_with_hashes(rp, rid, include_plan_file=False))
-        self.assertEqual(1, res.returncode)
-        self.assertIn("execution-plan.json", res.stderr)
-
-        # 10. schema_version=2 with SHA-256 mismatch in file_sha256 -> rejected
-        res, _ = run_download(lambda rp, fp, rid: write_optional_with_hashes(rp, rid, corrupt_hash=True))
-        self.assertEqual(1, res.returncode)
-        self.assertIn("SHA-256 mismatch", res.stderr)
-
-    def test_optional_experiment_and_plan_artifacts_in_completed_upload_and_hashes(self):
-        # 1. With optional experiment.yaml + execution-plan.json present
-        with_optional_dir = self.temp_dir / "complete-with-optional"
-        with_optional_dir.mkdir()
-        for name in RESULT_FILENAMES:
-            if name == "result.json":
-                (with_optional_dir / name).write_text('{"schema_version": 2}', encoding="utf-8")
-            else:
-                (with_optional_dir / name).write_text(f"content:{name}", encoding="utf-8")
-        (with_optional_dir / "experiment.yaml").write_text("schema_version: 1\nid: exp-opt\n", encoding="utf-8")
-        (with_optional_dir / "execution-plan.json").write_text('{"schema_version": 1}\n', encoding="utf-8")
-
-        s3_with = FakeS3Client()
-        upload_result_directory(with_optional_dir, "bucket", "run-opt", s3_client=s3_with)
-        expected_files = [*RESULT_FILENAMES, *OPTIONAL_RESULT_FILENAMES]
-        self.assertEqual([*expected_files, UPLOAD_COMPLETE_FILENAME], [name for name, _, _ in s3_with.calls])
-        marker_with = json.loads(
-            s3_with.objects[f"performance/results/run-opt/{UPLOAD_COMPLETE_FILENAME}"].decode("utf-8")
+        # 1. Every required artifact is uploaded before the marker, which hashes each of them
+        complete_dir = self.temp_dir / "complete"
+        populate(complete_dir)
+        s3_client = FakeS3Client()
+        upload_result_directory(complete_dir, "bucket", "run-complete", s3_client=s3_client)
+        self.assertEqual([*RESULT_FILENAMES, UPLOAD_COMPLETE_FILENAME], [name for name, _, _ in s3_client.calls])
+        marker = json.loads(
+            s3_client.objects[f"performance/results/run-complete/{UPLOAD_COMPLETE_FILENAME}"].decode("utf-8")
         )
-        self.assertEqual(expected_files, marker_with["files"])
-        self.assertEqual(2, marker_with["result_schema_version"])
-        self.assertEqual(set(expected_files), set(marker_with["file_sha256"]))
-        for name in expected_files:
-            expected_digest = hashlib.sha256((with_optional_dir / name).read_bytes()).hexdigest()
-            self.assertEqual(expected_digest, marker_with["file_sha256"][name])
+        self.assertEqual(list(RESULT_FILENAMES), marker["files"])
+        self.assertEqual(2, marker["result_schema_version"])
+        for name in RESULT_FILENAMES:
+            self.assertEqual(hashlib.sha256((complete_dir / name).read_bytes()).hexdigest(), marker["file_sha256"][name])
 
-        # 2. Without optional files: 6 core files + matching SHA-256 hashes
-        without_optional_dir = self.temp_dir / "complete-without-optional"
-        without_optional_dir.mkdir()
-        for name in RESULT_FILENAMES:
-            (without_optional_dir / name).write_text(f"core:{name}", encoding="utf-8")
-        s3_without = FakeS3Client()
-        upload_result_directory(without_optional_dir, "bucket", "run-core", s3_client=s3_without)
-        self.assertEqual([*RESULT_FILENAMES, UPLOAD_COMPLETE_FILENAME], [name for name, _, _ in s3_without.calls])
-        marker_without = json.loads(
-            s3_without.objects[f"performance/results/run-core/{UPLOAD_COMPLETE_FILENAME}"].decode("utf-8")
-        )
-        self.assertEqual(list(RESULT_FILENAMES), marker_without["files"])
-        for name in RESULT_FILENAMES:
-            expected_digest = hashlib.sha256((without_optional_dir / name).read_bytes()).hexdigest()
-            self.assertEqual(expected_digest, marker_without["file_sha256"][name])
-
-        # 3. Missing core file must still fail strictly even if optional files exist
-        missing_core_dir = self.temp_dir / "missing-core"
-        missing_core_dir.mkdir()
-        for name in RESULT_FILENAMES:
-            if name != "aws-metrics.json":
-                (missing_core_dir / name).write_text("{}", encoding="utf-8")
-        (missing_core_dir / "experiment.yaml").write_text("id: exp\n", encoding="utf-8")
-        (missing_core_dir / "execution-plan.json").write_text("{}\n", encoding="utf-8")
-        with self.assertRaisesRegex(ResultUploadError, "aws-metrics.json"):
-            upload_result_directory(missing_core_dir, "bucket", "run-bad", s3_client=FakeS3Client())
+        # 2. Missing run inputs or core files fail strictly and nothing is uploaded
+        for name in ("experiment.yaml", "execution-plan.json", "aws-metrics.json"):
+            with self.subTest(missing=name):
+                missing_dir = self.temp_dir / f"missing-{name}"
+                populate(missing_dir, skip=name)
+                s3_missing = FakeS3Client()
+                with self.assertRaisesRegex(ResultUploadError, name):
+                    upload_result_directory(missing_dir, "bucket", "run-bad", s3_client=s3_missing)
+                self.assertEqual([], s3_missing.calls)
 
     def test_experiment_metadata_and_optional_artifacts_in_failure_preservation(self):
-        # Case A: Early failure via args.experiment passed into cli.execute()
-        exp_file = self.temp_dir / "experiment.yaml"
+        # Case A: Early failure of an incomplete manifest passed to cli.execute()
+        exp_file = self.temp_dir / "incomplete-experiment.yaml"
         exp_file.write_text("schema_version: 1\nid: exp-early\n", encoding="utf-8")
-        missing_profile = self.temp_dir / "missing-profile.yaml"
         fake_s3_a = FakeS3Client()
         dir_a = self.temp_dir / "exp-early-dir"
-        args = cli.parser().parse_args(["--profile", str(missing_profile), "--result-dir", str(dir_a)])
-        args.experiment = str(exp_file)
+        args = cli.parser().parse_args(["--experiment", str(exp_file), "--result-dir", str(dir_a)])
         with (
             patch("performance.runner.storage.boto3.client", return_value=fake_s3_a),
             patch.dict(
