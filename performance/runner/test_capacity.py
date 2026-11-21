@@ -1,20 +1,13 @@
-"""Capacity preflight using AWS client doubles, including runner seed boundaries."""
-import copy
-import json
+"""Capacity preflight using AWS client doubles; runner seed boundaries live in test_execution."""
 import os
-import tempfile
 import unittest
-
-import yaml
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from performance.runner import cli
 from performance.runner.aws import InfrastructureCapacityCollector, CloudWatchMetricCollector
 from performance.runner.capacity import assert_manifest_capacity
 from performance.runner.config import ConfigurationError
 from performance.runner.plan import load_execution_plan
-from performance.runner.test_execution import PerformanceExecutionTest
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / 'performance/fixtures/experiments/mock-small-operating.yaml'
@@ -93,7 +86,7 @@ class ManifestCapacityTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigurationError, 'CONCURRENCY'):
             self.collector.collect(expected=self.expected)
 
-    def test_cloudwatch_resource_binding_overrides_environment_without_mutation(self):
+    def test_cloudwatch_resource_dimensions_come_from_manifest_not_environment(self):
         env = {key: 'wrong-resource' for key in ('PERF_ECS_CLUSTER', 'PERF_ECS_SERVICE', 'PERF_RDS_INSTANCE_ID',
                                                'PERF_SAGEMAKER_ENDPOINT_NAME', 'PERF_SAGEMAKER_VARIANT_NAME')}
         env.update({f'PERF_{prefix}_{name}_NAME': f'{prefix}-{name}'
@@ -111,65 +104,5 @@ class ManifestCapacityTest(unittest.TestCase):
                     self.assertEqual(self.expected['ecs']['worker']['service_identifier'], dimensions['ServiceName'])
 
 
-class ManifestExecutionTest(PerformanceExecutionTest):
-    # Reuse existing runner doubles; inherited tests continue to cover the legacy path.
-    def configure_manifest(self):
-        manifest = yaml.safe_load(MANIFEST.read_text())
-        manifest['profile'] = str((MANIFEST.parent / manifest['profile']).resolve())
-        manifest['dataset'] = str((MANIFEST.parent / manifest['dataset']).resolve())
-        manifest['infrastructure']['expected']['ecs']['api'] = {
-            **manifest['infrastructure']['expected']['ecs']['worker'], 'service_identifier': 'fixture-api'}
-        del manifest['infrastructure']['expected']['ecs']['api']['work_items_concurrency']
-        path = self.result_dir.parent / 'experiment.yaml'
-        path.write_text(yaml.safe_dump(manifest))
-        self.args.experiment = str(path)
-        self.expected = load_execution_plan(path).to_dict()['infrastructure']['expected']
-        ecs, rds, sm, _, _ = clients(self.expected)
-        self.capacity.collect.return_value = InfrastructureCapacityCollector(
-            ecs_client=ecs, rds_client=rds, sagemaker_client=sm).collect(expected=self.expected)
-
-    def test_manifest_runs_without_legacy_expected_environment(self):
-        self.configure_manifest()
-        with patch.dict(os.environ, {'PERF_EXPECTED_WORK_ITEMS_CONCURRENCY': '', 'PERF_EXPECTED_ECS_TASK_COUNT': ''}):
-            self.assertEqual(0, cli.execute(self.args))
-        self.capacity.collect.assert_called_once_with(expected=self.expected)
-        self.api.create_suite.assert_called_once()
-        self.k6.assert_called_once()
-        result = json.loads((self.result_dir / 'result.json').read_text())
-        self.assertEqual(self.capacity.collect.return_value['ecs'], result['infrastructure_capacity']['ecs'])
-
-    def test_every_capacity_mismatch_and_missing_field_blocks_seed_and_workload(self):
-        self.configure_manifest()
-        original = copy.deepcopy(self.capacity.collect.return_value)
-        paths = []
-        for role, config in self.expected['ecs'].items():
-            paths += [('ecs', role, key) for key in config]
-            paths += [('ecs', role, key) for key in ('running_task_count', 'pending_task_count', 'status', 'task_definition_arn', 'deployments')]
-            paths += [('ecs', role, 'deployments', 0, key) for key in original['ecs'][role]['deployments'][0]]
-        for resource in ('rds', 'sagemaker'):
-            paths += [(resource, key) for key in original[resource]]
-        for index, path in enumerate(paths):
-            for missing in (False, True):
-                with self.subTest(path=path, missing=missing):
-                    actual = copy.deepcopy(original)
-                    parent = actual
-                    for key in path[:-1]:
-                        parent = parent[key]
-                    if missing:
-                        del parent[path[-1]]
-                    else:
-                        parent[path[-1]] = 'WRONG'
-                    self.capacity.collect.return_value = actual
-                    self.args.result_dir = str(self.result_dir) + f'-{index}-{missing}'
-                    with self.assertRaisesRegex(ConfigurationError, 'expected .* / actual'):
-                        cli.execute(self.args)
-                    self.api.create_suite.assert_not_called()
-                    self.k6.assert_not_called()
-
-    def test_manifest_lookup_error_blocks_seed_and_workload(self):
-        self.configure_manifest()
-        self.capacity.collect.side_effect = ConfigurationError('expected observable / actual lookup failed')
-        with self.assertRaises(ConfigurationError):
-            cli.execute(self.args)
-        self.api.create_suite.assert_not_called()
-        self.k6.assert_not_called()
+if __name__ == '__main__':
+    unittest.main()
