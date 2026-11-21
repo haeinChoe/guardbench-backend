@@ -26,7 +26,7 @@ RESULT_FILENAMES = (
     "result.json",
     "report.md",
 )
-# Provisional optional artifacts for pending #20 (DRAFT ADR 0016) / #21 / #24 integration; RESULT_FILENAMES remains strict.
+# Optional experiment artifacts defined by ADR 0016; core RESULT_FILENAMES validation remains strict.
 OPTIONAL_RESULT_FILENAMES = (
     "experiment.yaml",
     "execution-plan.json",

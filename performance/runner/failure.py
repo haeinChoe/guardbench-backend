@@ -69,7 +69,7 @@ class RunContext:
         infrastructure_id: str | None = None,
         infrastructure_revision: str | None = None,
     ) -> None:
-        """Record optional #20/#21/#24 integration metadata (aligned with DRAFT ADR 0016; leaves core #25 contract unchanged)."""
+        """Record experiment identity and input sources defined by ADR 0016."""
         if experiment_path is not None:
             raw_path = str(experiment_path).strip()
             if raw_path:
@@ -79,7 +79,7 @@ class RunContext:
         self.record_input("infrastructure_revision", infrastructure_revision)
 
     def record_execution_plan(self, plan: Mapping[str, Any]) -> None:
-        """Record optional execution-plan metadata for pending #20/#21/#24 integration (aligned with DRAFT ADR 0016)."""
+        """Record resolved execution-plan metadata defined by ADR 0016."""
         experiment = plan.get("experiment")
         experiment_dict = experiment if isinstance(experiment, Mapping) else {}
         infrastructure = plan.get("infrastructure")
@@ -179,7 +179,7 @@ def _copy_raw_inputs(context: RunContext, record_error: Callable[[str, BaseExcep
 
 
 def _backfill_experiment_metadata_from_plan(context: RunContext) -> None:
-    """Populate missing failure inputs from optional execution-plan.json (pending #20/#21/#24 hook; core #25 unchanged)."""
+    """Populate missing failure inputs from an available execution-plan.json."""
     if context.result_dir is None or not context.result_dir_owned:
         return
     plan_path = context.result_dir / "execution-plan.json"
