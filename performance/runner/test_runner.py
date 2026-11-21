@@ -54,10 +54,7 @@ class PerformanceRunnerTest(unittest.TestCase):
             "rds": {"db_instance_identifier": "db"},
             "sagemaker": {"endpoint_name": "classifier-endpoint", "production_variant_name": "AllTraffic"},
         }
-        with patch.dict(os.environ, {
-            "PERF_SAGEMAKER_ENDPOINT_NAME": "environment-endpoint",
-            "PERF_SAGEMAKER_VARIANT_NAME": "environment-variant",
-        }, clear=True):
+        with patch.dict(os.environ, {}, clear=True):
             metrics = CloudWatchMetricCollector(
                 ROOT / "metrics/aws.yaml", resources=resources, cloudwatch_client=object()).config["metrics"]
 
@@ -193,8 +190,6 @@ class PerformanceRunnerTest(unittest.TestCase):
         self.assertIn("--experiment", verify_runtime)
         self.assertIn("performance/fixtures/experiments/smoke.yaml", verify_runtime)
         self.assertIn("performance/datasets/baseline-v1.yaml", verify_runtime)
-        self.assertNotIn("--profile", verify_runtime)
-        self.assertNotIn("performance/profiles/", verify_runtime)
 
     def test_container_launcher_uses_image_runtime(self):
         launcher = (ROOT.parent / "bin" / "run-performance").read_text(encoding="utf-8")

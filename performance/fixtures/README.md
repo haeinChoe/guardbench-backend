@@ -50,9 +50,8 @@ The frozen `ExecutionPlan` exposes `to_dict()`, `profile`, `dataset`, `seed_payl
 return detached copies. The loader reads each YAML input once and retains the
 parsed seed payload so later file or environment changes cannot alter the plan.
 
-`--experiment` is the Runner's only, required input. The former default smoke run,
-`--profile`/`--dataset` options, `dry-run.json` and environment-supplied resource
-identifiers/expected capacity were removed (ADR 0016 Amendments). `bin/verify-runtime`
+`--experiment` is the Runner's only, required input. Resource identifiers and expected
+capacity come only from the manifest. `bin/verify-runtime`
 dry-runs this fixture manifest to verify the image. Product APIs, DB schema,
 deployment configuration and production dependencies are unchanged.
 

@@ -37,8 +37,6 @@ storage/IOPS/connection pool 튜닝은 MVP 실험 범위가 아니다. RDS와 SQ
 ## 현재 프로필 파일
 
 Runner는 기본 프로필 없이 experiment manifest(`--experiment`)가 참조하는 Profile만 실행한다.
-legacy 기본 실행용 `smoke.yaml`(`SMOKE`)과 `concurrent-10.yaml`(`LOAD`)은 제거했다
-([ADR 0016 Amendments](../../docs/decisions/0016-performance-experiment-plan.md#amendments)).
 현재 이 디렉터리에는 실제 운영 프로필 파일이 없고, 검증용 fixture는 `performance/fixtures/profiles/`에 있다.
 
 입력 검증은 `SMOKE`·`STRESS`·`SOAK`만 허용한다. 허용 유형이 있다는 사실이 해당 프로필의
@@ -105,8 +103,6 @@ polling을 반영한 뒤에만 completed를 증가시킨다(TestRun 성공 여�
 ADR 0016이 선택한 테스트 유형은 `SMOKE`·`STRESS`·`SOAK`이며 Runner는 이 세 유형만 허용한다.
 현재 구현은 단계형 실행 기반과 `STRESS` 타입 검증 fixture `staged-stress.yaml`만 제공한다.
 세 유형별 실제 프로필의 부하 수치·시간·판정 기준과 `SOAK` 프로필 구현은 완료된 것으로 간주하지 않는다.
-종전 `LOAD` 타입 운영 패턴 fixture `staged-operating.yaml`은 허용 유형 축소로 제거했고 후속 Issue에서
-새로 정의한다.
 
 검증용 곡선은 [`staged-stress.yaml`](../fixtures/profiles/staged-stress.yaml)에 있다. 이 fixture의
 부하/acceptance 숫자는 짧은 로컬 기능 검증용이다. 실제 인프라 자원값,

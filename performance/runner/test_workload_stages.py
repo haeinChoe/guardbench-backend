@@ -81,7 +81,7 @@ class WorkloadStagesTest(unittest.TestCase):
                 with self.assertRaises(ConfigurationError):
                     validate_profile(profile)
 
-    def test_legacy_workload_is_not_overridden_by_inherited_stages(self):
+    def test_ramp_up_workload_is_not_overridden_by_inherited_stages(self):
         profile = staged_profile()
         del profile["workload"]["stages"]
         profile["workload"].update(ramp_up_seconds=0, duration_seconds=1)
@@ -91,7 +91,7 @@ class WorkloadStagesTest(unittest.TestCase):
             summary.write_text("{}")
             with patch.dict(os.environ, {"PERF_STAGES_JSON": "invalid"}), patch(
                     "performance.runner.cli.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run:
-                run_k6(profile, "legacy", 1, "http://localhost", summary, ROOT.parent)
+                run_k6(profile, "ramp-up", 1, "http://localhost", summary, ROOT.parent)
             self.assertNotIn("PERF_STAGES_JSON", run.call_args.kwargs["env"])
             self.assertEqual("1", run.call_args.kwargs["env"]["PERF_DURATION_SECONDS"])
 
@@ -128,7 +128,7 @@ class WorkloadStagesTest(unittest.TestCase):
             self.assertTrue(check["passed"])
             self.assertEqual("PASS", result["status"])
 
-    def test_legacy_profile_skips_completion_iterations_check(self):
+    def test_ramp_up_profile_skips_completion_iterations_check(self):
         metrics = {"status": "COLLECTED", "metrics": [
             {"id": prefix, "values": [1]} for prefix in ("ecs_", "sqs_", "rds_", "sagemaker_")
         ]}

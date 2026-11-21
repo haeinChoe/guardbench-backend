@@ -92,9 +92,7 @@ Runner는 실행 직전에 Worker와 선택적 API Service가 사용하는 activ
 | snapshot 시점의 실제 running/pending task 수 | `running_task_count`, `pending_task_count` |
 | Service와 PRIMARY deployment의 task definition·rollout 상태 | `task_definition_arn`, `deployments` |
 
-manifest 없이 환경변수(`PERF_ECS_CLUSTER`, `PERF_EXPECTED_*` 등)로 자원과 기대값을 받던
-legacy 경로와 단일 `ecs` snapshot은 제거했다. 대조 규칙은
-[Manifest capacity preflight](performance-capacity-preflight.md)를 따른다.
+대조 규칙은 [Manifest capacity preflight](performance-capacity-preflight.md)를 따른다.
 
 Snapshot은 Terraform 입력값 자체가 아니라 AWS에 적용된 실제 구성값을 기록한다. 그러므로
 Terraform apply와 Performance Service rollout이 끝난 뒤 실행해야 하며, snapshot의 CPU/memory가
@@ -123,7 +121,6 @@ workload다. 기준으로 사용한 Dataset은 조용히 수정하지 않는다.
 - `STRESS`: 부하 증가에 따른 처리 한계, 지연, SQS backlog와 실패 양상 확인
 - `SOAK`: 일정한 부하를 장시간 유지하며 메모리·연결·backlog·오류 누적 확인
 
-legacy 기본 실행용 `smoke.yaml`(`SMOKE`)과 `concurrent-10.yaml`(`LOAD`)은 제거했다.
 현재 실제 운영 프로필 파일은 없고 검증 fixture만 `performance/fixtures/profiles/`에 있다.
 Runner는 이 세 유형만 허용하고 다른 `test.type`은 설정 오류로 거부한다. 허용 유형이 있다는 사실이
 해당 프로필의 구현 완료를 뜻하지 않는다. 유형별 부하 수치·시간·판정 기준과 프로필 구현은 #23 범위다.
