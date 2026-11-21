@@ -109,7 +109,7 @@ Dataset은 무엇을 실행할지, Profile은 얼마나 실행할지를 소유�
 | 구분 | 책임 | 예시 |
 | --- | --- | --- |
 | Dataset | TestSuite/TestCase 내용과 재현 가능한 TestCase 수 | `baseline-v1`, 78 TestCases |
-| Profile | 동시 TestRun 수, ramp-up/duration 또는 stages, test type, acceptance criteria | `FIXTURE-OPERATING`, `LOAD` |
+| Profile | 동시 TestRun 수, ramp-up/duration 또는 stages, test type, acceptance criteria | `FIXTURE-OPERATING`, `SMOKE` |
 
 `performance/datasets/baseline-v1.yaml`은 기존 데모용 78건 import fixture를 immutable
 source로 고정한다. 별도 대규모 실행용 `performance/datasets/large-suite-491-v1.yaml`(491 TestCases, immutable) 파일도 함께 관리한다. 이 Dataset은 classifier 정확도 benchmark가 아니라 반복 가능한 performance
