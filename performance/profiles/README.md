@@ -109,8 +109,8 @@ polling을 반영한 뒤에만 completed를 증가시킨다(TestRun 성공 여�
 `ramp_up_seconds`/`duration_seconds` 기반 승인 Profile에는 이 새 판정을 강제하지 않으며,
 기존 보관 artifact도 다시 작성하지 않는다.
 
-ADR 0016이 선택한 테스트 유형은 `SMOKE`·`STRESS`·`SOAK`다. 현재 PR #31은 단계형
-실행 기반과 `LOAD` 운영·`STRESS` 검증 fixture를 제공한다. 세 유형별 실제 프로필의
+ADR 0016이 선택한 테스트 유형은 `SMOKE`·`STRESS`·`SOAK`다. 현재 구현은 단계형 실행 기반과
+검증 fixture(`LOAD` 타입 `staged-operating.yaml`, `STRESS` 타입 `staged-stress.yaml`)만 제공한다. 세 유형별 실제 프로필의
 부하 수치·시간·판정 기준, `SOAK` 프로필 구현과 기존 `LOAD` 프로필·허용 타입의 전환
 처리는 완료된 것으로 간주하지 않으며 #23 후속 PR 범위다.
 
