@@ -9,6 +9,7 @@
 - ADR Status: ACCEPTED
 - Decision date: 2026-11-21
 - Related Issue: #20; 구현·검증 #21–#26
+- Amended: 2026-11-22 — 허용 테스트 유형을 `SMOKE`·`STRESS`·`SOAK`로 축소(#21). 아래 Amendments 참고.
 
 ## Context
 
@@ -48,15 +49,12 @@ AWS resource 생성/삭제, CodeBuild/Fargate 선택은 포함하지 않는다.
 | `STRESS` | 부하를 높이면서 처리 한계, 지연, SQS backlog와 실패 양상을 확인한다. |
 | `SOAK` | 일정한 부하를 장시간 유지하며 메모리·연결·backlog·오류 누적을 확인한다. |
 
-현재 프로필 파일은 `performance/profiles/smoke.yaml`(`SMOKE`)과
-`performance/profiles/concurrent-10.yaml`(`LOAD`)이다. 입력 검증은 `SMOKE`, `LOAD`,
-`PEAK`, `STRESS`, `SOAK`를 허용하지만 `PEAK`, `STRESS`, `SOAK`의 프로필 파일은 없다.
-허용 타입의 존재와 해당 프로필의 구현 여부를 구분한다.
+Runner 입력 검증은 이 세 유형만 허용하며 `LOAD`, `PEAK` 등 다른 `test.type`은
+설정 오류로 거부한다. 현재 프로필 파일은 `performance/profiles/smoke.yaml`(`SMOKE`)이며
+`STRESS`, `SOAK`의 프로필 파일은 없다. 허용 유형과 해당 프로필의 구현 여부는 구분한다.
 
 이 결정은 사용할 유형과 목적을 정의한다. 각 프로필의 부하 수치·시간·판정 기준,
-단계형 부하의 구체적인 구현은 별도 Issue #23에서 다룬다. 기존 `LOAD` 프로필과
-허용 타입의 전환·제거는 해당 구현에서 실제 소비처를 확인한 뒤 명시적으로 처리한다.
-이 문서 변경으로 프로필 파일이나 Runner의 허용 타입을 변경하지 않는다.
+단계형 부하의 구체적인 구현은 별도 Issue #23에서 다룬다.
 
 ### 실행 manifest v1
 
@@ -210,3 +208,14 @@ metadata에 한정된다. DB migration이나 인프라 자원 변경은 없다.
 - 결과의 입력 출처와 strict complete/partial artifact 처리를 검사한다.
 - Runner와 k6 연결, 정상·불일치·중간 오류, 프로세스 정리를 검증한다.
   테스트 대역을 사용하는 검증과 실환경 통합 검증의 결과를 구분한다.
+
+## Amendments
+
+### 2026-11-22 — 허용 테스트 유형 축소
+
+결정권자 지시로 Runner 입력 검증의 허용 `test.type`을 이 문서가 정한 `SMOKE`, `STRESS`,
+`SOAK`로 맞춘다(#21). 종전 문구는 `LOAD`, `PEAK` 허용을 유지하고 전환을 #23 구현에 맡겼으나
+이 결정으로 #21에서 처리한다. 소비처 조사 결과 `LOAD` 소비처는 `performance/profiles/concurrent-10.yaml`과
+검증 fixture `performance/fixtures/profiles/mock-operating.yaml`뿐이었고 `PEAK` 소비처는 없었다.
+`concurrent-10.yaml`은 참조처가 없어 제거하고, fixture는 VU당 1회 완료로 실행 경로를 확인하는
+성격에 맞춰 `SMOKE`로 바꿨다. IaC fork(`haeinChoe/guardbench-iac`)는 `smoke.yaml`만 참조한다.
