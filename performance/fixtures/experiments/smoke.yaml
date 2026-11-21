@@ -1,8 +1,8 @@
 # Input validation fixture; resource values are examples for tests.
 schema_version: 1
-id: fixture-small-operating
+id: fixture-smoke
 infrastructure:
-  id: fixture-small
+  id: fixture-infra
   revision: fixture-v1
   expected:
     ecs:
@@ -21,5 +21,5 @@ infrastructure:
       production_variant_name: AllTraffic
       instance_type: fixture-instance-type
       desired_instance_count: 1
-profile: ../profiles/mock-operating.yaml
-dataset: ../datasets/mock-two-cases.yaml
+profile: ../profiles/smoke.yaml
+dataset: ../datasets/two-cases.yaml
