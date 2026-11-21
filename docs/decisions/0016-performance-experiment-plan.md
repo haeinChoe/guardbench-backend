@@ -9,7 +9,7 @@
 - ADR Status: ACCEPTED
 - Decision date: 2026-11-21
 - Related Issue: #20; 구현·검증 #21–#26
-- Amended: 2026-11-21 — manifest 없는 legacy 실행 경로 폐기(#21 결정 코멘트). 아래 Amendments 참고.
+- Amended: 2026-11-21 — 실행 입력을 experiment manifest 하나로 통일(#21 결정 코멘트). 아래 Amendments 참고.
 - Amended: 2026-11-22 — 허용 테스트 유형을 `SMOKE`·`STRESS`·`SOAK`로 축소(#21). 아래 Amendments 참고.
 
 ## Context
@@ -22,9 +22,7 @@
 실행 전에 검증하고 결과까지 보존할 단일 입력이 필요하다. 인프라 capacity는
 IaC/배포 설정이, workload와 acceptance는 Profile이 소유하는 기존 경계를 유지한다.
 
-현재 Profile은 workload/acceptance/target을 소유한다. manifest 도입 전에는 `--profile`, `--dataset`
-호출을 `bin/run-performance`, `bin/verify-runtime`, Docker ENTRYPOINT와 실행 테스트에서 사용했다.
-결과 소비처는 `performance-analysis-bundle.yml`, Runner report/storage와 관련 테스트다.
+현재 Profile은 workload/acceptance/target을 소유한다. 결과 소비처는 `performance-analysis-bundle.yml`, Runner report/storage와 관련 테스트다.
 외부 사용자 API·DB schema·migration·production dependency 변경은 이 범위에 없다.
 
 ## Decision
@@ -50,9 +48,7 @@ AWS resource 생성/삭제, CodeBuild/Fargate 선택은 포함하지 않는다.
 | `STRESS` | 부하를 높이면서 처리 한계, 지연, SQS backlog와 실패 양상을 확인한다. |
 | `SOAK` | 일정한 부하를 장시간 유지하며 메모리·연결·backlog·오류 누적을 확인한다. |
 
-legacy 경로 폐기로 `performance/profiles/smoke.yaml`(`SMOKE`)과
-`performance/profiles/concurrent-10.yaml`(`LOAD`)을 제거했다. 현재 실제 운영 프로필 파일은 없고
-검증 fixture만 `performance/fixtures/profiles/`에 있다. Runner 입력 검증은 위 세 유형만 허용하며
+현재 실제 운영 프로필 파일은 없고 검증 fixture만 `performance/fixtures/profiles/`에 있다. Runner 입력 검증은 위 세 유형만 허용하며
 `LOAD`, `PEAK` 등 다른 `test.type`은 설정 오류로 거부한다. 허용 유형과 해당 프로필의 구현 여부는 구분한다.
 
 이 결정은 사용할 유형과 목적을 정의한다. 각 프로필의 부하 수치·시간·판정 기준,
@@ -61,8 +57,7 @@ legacy 경로 폐기로 `performance/profiles/smoke.yaml`(`SMOKE`)과
 ### 실행 manifest v1
 
 `--experiment <yaml>`이 Runner의 유일한 실행 입력이며 필수다. 파일 참조는 manifest의
-디렉터리를 기준으로 해석한다. `--profile`/`--dataset` 옵션과 인자 없는 기본 smoke 호출은
-제거했고 구 CLI를 위한 alias/shim은 두지 않는다. `bin/verify-runtime`은 검증 fixture
+디렉터리를 기준으로 해석한다. `bin/verify-runtime`은 검증 fixture
 manifest의 dry-run으로 image 실행 경로를 확인한다.
 
 ```yaml
@@ -126,9 +121,7 @@ Worker snapshot으로 대신하지 않는다. RDS/SageMaker의 식별·구성값
 대조한다. instance count/endpoint 상태는 준비 완료 여부까지 확인한다.
 
 manifest의 Worker/RDS/SageMaker 식별자는 capacity 조회와 CloudWatch dimension의 유일한
-입력이다. 기대 capacity와 자원 식별 환경변수(`PERF_EXPECTED_*`, `PERF_ECS_CLUSTER`,
-`PERF_ECS_SERVICE`, `PERF_RDS_INSTANCE_ID`, `PERF_SAGEMAKER_*`)와 단일 `ecs` snapshot은
-제거했다. API 지표를 추가할 경우 Worker 지표와 역할이 다른 ID를 사용한다.
+입력이며 자원 식별과 기대 capacity를 환경변수로 받지 않는다. API 지표를 추가할 경우 Worker 지표와 역할이 다른 ID를 사용한다.
 source/DLQ queue URL·QueueName과 API base URL 등 실행 연결 입력은 기존 배포 환경 입력을
 계속 사용한다. 이런 연결 입력을 capacity preset이나 가짜 metric으로 추정하지 않는다.
 설정 불일치·조회 실패·미완료 rollout은 seed/k6 전에 명확한 expected/actual 차이로 중단한다.
@@ -197,7 +190,7 @@ phase=upload를 남긴다. 입력 검증 이전에 최소 run ID·단계를 마�
 ## Consequences
 
 단일 manifest로 입력 조합과 revision을 검토하고 재현할 수 있다. 반면 manifest와
-참조 파일 사이의 검증·snapshot 보존이 추가로 필요하다. legacy 실행 경로를 폐기했으므로
+참조 파일 사이의 검증·snapshot 보존이 추가로 필요하다. manifest가 유일한 입력이므로
 실제 환경에서 실행하려면 그 환경의 자원과 일치하는 manifest가 있어야 한다. 실제 dev manifest와
 Runner host 실행 절차·환경 키 전환은 IaC 후속 작업(haeinChoe/guardbench-iac#11)으로 남긴다.
 DB migration이나 인프라 자원 변경은 없다.
@@ -213,14 +206,14 @@ DB migration이나 인프라 자원 변경은 없다.
 
 ## Amendments
 
-### 2026-11-21 — legacy 실행 경로 폐기
+### 2026-11-21 — experiment manifest 단일 입력
 
-결정권자 지시(#21 결정 코멘트)로 manifest 없는 실행 경로를 폐기한다. 이 문서가 유지하던
-`--profile`/`--dataset`과 기본 smoke 호출, `smoke.yaml`·`concurrent-10.yaml` 프로필,
-환경변수 기반 기대 capacity·자원 식별과 단일 `ecs` snapshot, legacy `dry-run.json`을 제거했다.
-소비처 조사 결과 Backend 내부 소비처는 `bin/verify-runtime` 하나였고 fixture manifest dry-run으로
-전환했다. 외부 소비처인 IaC Runner host 절차는 가동 중인 인프라가 없어 후속 Issue로 전환한다.
-`ramp_up_seconds`/`duration_seconds` workload 형식과 Dataset 파일은 legacy 범위가 아니므로 유지한다.
+결정권자 지시(#21 결정 코멘트)로 Runner 실행 입력을 experiment manifest 하나로 통일한다.
+Runner는 필수 `--experiment`만 받고, 자원 식별과 기대 capacity는 manifest의
+`infrastructure.expected`에서만 읽으며 ECS snapshot은 역할별(`ecs.worker`, 선택적 `ecs.api`)로 남긴다.
+`bin/verify-runtime`은 검증 fixture manifest의 dry-run으로 확인한다. IaC Runner host 절차 전환은
+haeinChoe/guardbench-iac#11에서 다룬다. `ramp_up_seconds`/`duration_seconds` workload 형식과
+Dataset 파일은 그대로 사용한다.
 
 ### 2026-11-22 — 허용 테스트 유형 축소
 
