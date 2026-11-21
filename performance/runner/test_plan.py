@@ -250,17 +250,13 @@ class ExecutionPlanTest(unittest.TestCase):
             self.assertEqual(0, cli.execute(args))
         result = self.directory / "result"
         self.assertEqual(json.loads(output.getvalue()), json.loads((result / "execution-plan.json").read_text()))
-        self.assertFalse((result / "result.json").exists())
-        self.assertFalse((result / "dry-run.json").exists())
+        self.assertEqual({"experiment.yaml", "profile.yaml", "dataset.yaml", "execution-plan.json"},
+                         {path.name for path in result.iterdir()})
         for name, source in (("experiment", self.manifest_path), ("profile", self.profile_path), ("dataset", self.dataset_path)):
             self.assertEqual(source.read_bytes(), (result / f"{name}.yaml").read_bytes())
 
-    def test_experiment_is_the_only_input(self):
-        for options in ([], ["--dry-run"],
-                        ["--dry-run", "--profile", str(self.profile_path)],
-                        ["--dry-run", "--dataset", str(self.dataset_path)],
-                        ["--experiment", str(self.manifest_path), "--profile", str(self.profile_path)],
-                        ["--experiment", str(self.manifest_path), "--dataset", str(self.dataset_path)]):
+    def test_experiment_is_required(self):
+        for options in ([], ["--dry-run"]):
             with self.subTest(options=options), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 cli.parser().parse_args(options)
 
