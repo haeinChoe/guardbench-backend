@@ -182,7 +182,7 @@ class PerformanceRunnerTest(unittest.TestCase):
         self.assertIn("k6 version", verify_runtime)
         self.assertIn("bin/run-performance", verify_runtime)
         self.assertIn("--experiment", verify_runtime)
-        self.assertIn("performance/fixtures/experiments/mock-small-operating.yaml", verify_runtime)
+        self.assertIn("performance/fixtures/experiments/smoke.yaml", verify_runtime)
         self.assertIn("performance/datasets/baseline-v1.yaml", verify_runtime)
         self.assertNotIn("--profile", verify_runtime)
         self.assertNotIn("performance/profiles/", verify_runtime)
