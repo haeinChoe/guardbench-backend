@@ -3,7 +3,7 @@
 성능 실험은 다음 네 개의 개념을 분리한다.
 
 1. **Dataset / Dataset Size**: 한 TestRun이 처리할 TestCase 집합과 개수다. 실제 Dataset은 `baseline-v1` 78건이고 별도 `large-suite-491-v1` 491건 파일도 있다. 두 Dataset의 내용·버전은 고정하며, `SMALL/MEDIUM/LARGE`의 경계값은 아직 정하지 않는다.
-2. **Test Type**: 실험 목적이다. 사용할 유형은 `SMOKE`·`STRESS`·`SOAK`다. 현재 Runner가 허용하는 다섯 타입의 축소는 별도로 결정한다.
+2. **Test Type**: 실험 목적이다. 사용할 유형은 `SMOKE`·`STRESS`·`SOAK`이며 Runner는 이 세 유형만 허용한다.
 3. **Workload**: 시스템에 가하는 부하 값이다. Profile의 `concurrent_test_runs`, `ramp_up_seconds`/`duration_seconds` 또는 단계형 `stages`, `max_iterations_per_vu`, timeout/polling 값이 여기에 속한다.
 4. **Infrastructure Capacity**: ECS task 수, CPU/memory, RDS 사양, SageMaker endpoint capacity처럼 시스템이 공급하는 configured resource와 dependency 상태다. Performance Profile이 소유하지 않고 Terraform/배포 설정이 소유한다.
 
@@ -41,8 +41,8 @@ legacy 기본 실행용 `smoke.yaml`(`SMOKE`)과 `concurrent-10.yaml`(`LOAD`)은
 ([ADR 0016 Amendments](../../docs/decisions/0016-performance-experiment-plan.md#amendments)).
 현재 이 디렉터리에는 실제 운영 프로필 파일이 없고, 검증용 fixture는 `performance/fixtures/profiles/`에 있다.
 
-`SMOKE`·`LOAD`·`PEAK`·`STRESS`·`SOAK`는 입력 검증에서 허용하는 타입이지만 허용 타입이 있다는
-사실이 해당 프로필의 구현 완료를 뜻하지 않는다. 검증용 fixture 파일과 실제 실행 프로필을 구분한다.
+입력 검증은 `SMOKE`·`STRESS`·`SOAK`만 허용한다. 허용 유형이 있다는 사실이 해당 프로필의
+구현 완료를 뜻하지 않는다. 검증용 fixture 파일과 실제 실행 프로필을 구분한다.
 Profile 이름은 Dataset Size나 Infrastructure Capacity를 의미하지 않는다.
 
 사용할 `SMOKE`·`STRESS`·`SOAK`의 목적은 ADR 0016에 정의한다. 유형별 부하 수치·시간·판정 기준과
