@@ -2,7 +2,7 @@
 
 > Status: APPROVED
 > Owner: Backend
-> Related Issue: #140, #187, #193, #200, #212, #24, #25
+> Related Issue: #140, #187, #193, #200, #212, #24, #25, #26
 
 ## 목적과 원칙
 
@@ -290,7 +290,11 @@ s3://<PERFORMANCE_RESULTS_BUCKET>/performance/failures/<run-id>/
   - 번들링에 성공하면 Step Summary와 `bundle/bundle-metadata.json`에 `experiment_id`, `infrastructure_id`, `infrastructure_revision`, `scenario_id`, `scenario_type`을 함께 기록한다.
   - 불완전하거나 실패한 실행에서는 `performance/failures/<run-id>/failure.json` 존재 여부를 확인해 실패 `phase`, `error.type`과 진단 경로를 안내한다.
 
-로컬 API에 대한 입력 검증은 `--dry-run`으로 수행할 수 있다. 실제 비동기 Smoke 실행은
+로컬 API에 대한 입력 검증은 `--dry-run`으로 수행할 수 있다. AWS credential 없이 실제
+Runner orchestration과 실제 `k6` 프로세스 연결(정상 완료, capacity 불일치 차단, 중간 오류 보존)을
+검증하려면 [로컬 mock E2E harness](../performance/runner/LOCAL_E2E.md) (`python3 -m performance.runner.local_e2e`)를
+실행한다. 이 harness는 로컬 모의 HTTP API와 fake AWS client를 사용하므로 실제 AWS 인프라·성능
+Baseline 검증을 대신하지 않는다. 실제 비동기 Smoke 실행은
 SQS와 Worker가 동작하는 로컬 또는 dev 배포가 필요하다. 로컬 SQS 에뮬레이터(Floci 등)를 사용할 때는
 `PERF_SOURCE_QUEUE_URLS`와 `PERF_DLQ_URLS`에 에뮬레이터 URL을 지정하고
 `PERF_SQS_ENDPOINT_URL`을 추가한다. AWS metric이 없는 로컬 실행은 성능 판정용 Baseline으로
