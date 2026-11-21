@@ -37,8 +37,6 @@ storage/IOPS/connection pool 튜닝은 MVP 실험 범위가 아니다. RDS와 SQ
 ## 현재 프로필 파일
 
 Runner는 기본 프로필 없이 experiment manifest(`--experiment`)가 참조하는 Profile만 실행한다.
-legacy 기본 실행용 `smoke.yaml`(`SMOKE`)과 `concurrent-10.yaml`(`LOAD`)은 제거했다
-([ADR 0016 Amendments](../../docs/decisions/0016-performance-experiment-plan.md#amendments)).
 현재 이 디렉터리에는 실제 운영 프로필 파일이 없고, 검증용 fixture는 `performance/fixtures/profiles/`에 있다.
 
 입력 검증은 `SMOKE`·`STRESS`·`SOAK`만 허용한다. 허용 유형이 있다는 사실이 해당 프로필의

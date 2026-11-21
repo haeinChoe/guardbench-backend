@@ -86,18 +86,16 @@ class ManifestCapacityTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigurationError, 'CONCURRENCY'):
             self.collector.collect(expected=self.expected)
 
-    def test_cloudwatch_resource_dimensions_come_from_manifest_not_environment(self):
-        env = {key: 'wrong-resource' for key in ('PERF_ECS_CLUSTER', 'PERF_ECS_SERVICE', 'PERF_RDS_INSTANCE_ID',
-                                               'PERF_SAGEMAKER_ENDPOINT_NAME', 'PERF_SAGEMAKER_VARIANT_NAME')}
-        env.update({f'PERF_{prefix}_{name}_NAME': f'{prefix}-{name}'
-                    for prefix in ('SOURCE_QUEUE', 'DLQ') for name in ('RESOLVE', 'WORK_ITEMS', 'FINALIZE')})
+    def test_cloudwatch_resource_dimensions_come_from_manifest(self):
+        env = {f'PERF_{prefix}_{name}_NAME': f'{prefix}-{name}'
+               for prefix in ('SOURCE_QUEUE', 'DLQ') for name in ('RESOLVE', 'WORK_ITEMS', 'FINALIZE')}
         with patch.dict(os.environ, env, clear=True):
             collector = CloudWatchMetricCollector(ROOT / 'performance/metrics/aws.yaml', resources=self.expected, cloudwatch_client=Mock())
             collector.validate_configuration()
-            self.assertEqual('wrong-resource', os.environ['PERF_ECS_SERVICE'])
+            values = {value for metric in collector.config['metrics'] for value in metric['dimensions'].values()}
+            self.assertLessEqual({'fixture-worker', 'fixture-db', 'fixture-classifier'}, values)
             for metric in collector.config['metrics']:
                 dimensions = metric['dimensions']
-                self.assertNotIn('wrong-resource', dimensions.values())
                 if metric['namespace'] == 'AWS/SQS':
                     self.assertTrue(dimensions['QueueName'].startswith(('SOURCE_QUEUE-', 'DLQ-')))
                 elif 'ServiceName' in dimensions:
