@@ -225,13 +225,6 @@ DB migration이나 인프라 자원 변경은 없다.
 ### 2026-11-22 — 허용 테스트 유형 축소
 
 결정권자 지시로 Runner 입력 검증의 허용 `test.type`을 이 문서가 정한 `SMOKE`, `STRESS`,
-`SOAK`로 맞춘다(#21). 종전 문구는 `LOAD`, `PEAK` 허용을 유지하고 전환을 #23 구현에 맡겼으나
-이 결정으로 #21에서 처리한다. 소비처 조사 결과 `LOAD` 소비처는 `performance/profiles/concurrent-10.yaml`과
-검증 fixture `performance/fixtures/profiles/mock-operating.yaml`뿐이었고 `PEAK` 소비처는 없었다.
-`concurrent-10.yaml`은 참조처가 없어 제거하고, fixture는 VU당 1회 완료로 실행 경로를 확인하는
-성격에 맞춰 `SMOKE`로 바꿨다. IaC fork(`haeinChoe/guardbench-iac`)는 `performance/profiles/smoke.yaml`만 참조한다.
-
-같은 정리로 검증 fixture 이름에서 실제 구성 수준처럼 읽히는 `small`과 허용 유형에 없는
-`operating` 표현을 제거했다. `mock-small-operating.yaml`·`mock-operating.yaml`·`mock-two-cases.yaml`은
-`experiments/smoke.yaml`·`profiles/smoke.yaml`·`datasets/two-cases.yaml`로, 식별자는
-`fixture-smoke`·`fixture-infra`·`FIXTURE-SMOKE`로 바꿨다. 인프라 구성 이름은 IaC 단계에서 정한다.
+`SOAK`로 맞춘다(#21). 다른 유형은 설정 오류로 거부한다. 검증 fixture는 세 유형 중 하나를 쓰고,
+이름에 실제 인프라 구성 수준이나 허용되지 않는 유형으로 읽히는 표현을 쓰지 않는다.
+인프라 구성 이름은 IaC 단계에서 정한다.
