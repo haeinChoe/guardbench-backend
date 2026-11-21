@@ -10,6 +10,7 @@
 - Decision date: 2026-11-21
 - Related Issue: #20; 구현·검증 #21–#26
 - Amended: 2026-11-21 — manifest 없는 legacy 실행 경로 폐기(#21 결정 코멘트). 아래 Amendments 참고.
+- Amended: 2026-11-22 — 허용 테스트 유형을 `SMOKE`·`STRESS`·`SOAK`로 축소(#21). 아래 Amendments 참고.
 
 ## Context
 
@@ -51,12 +52,11 @@ AWS resource 생성/삭제, CodeBuild/Fargate 선택은 포함하지 않는다.
 
 legacy 경로 폐기로 `performance/profiles/smoke.yaml`(`SMOKE`)과
 `performance/profiles/concurrent-10.yaml`(`LOAD`)을 제거했다. 현재 실제 운영 프로필 파일은 없고
-검증 fixture만 `performance/fixtures/profiles/`에 있다. 입력 검증은 `SMOKE`, `LOAD`,
-`PEAK`, `STRESS`, `SOAK`를 계속 허용한다. 허용 타입의 존재와 해당 프로필의 구현 여부를 구분한다.
+검증 fixture만 `performance/fixtures/profiles/`에 있다. Runner 입력 검증은 위 세 유형만 허용하며
+`LOAD`, `PEAK` 등 다른 `test.type`은 설정 오류로 거부한다. 허용 유형과 해당 프로필의 구현 여부는 구분한다.
 
 이 결정은 사용할 유형과 목적을 정의한다. 각 프로필의 부하 수치·시간·판정 기준,
-단계형 부하의 구체적인 구현은 별도 Issue #23에서 다룬다. 허용 타입의 축소는 별도로
-결정하며 이 문서 변경으로 Runner의 허용 타입을 변경하지 않는다.
+단계형 부하의 구체적인 구현은 별도 Issue #23에서 다룬다.
 
 ### 실행 manifest v1
 
@@ -221,3 +221,12 @@ DB migration이나 인프라 자원 변경은 없다.
 소비처 조사 결과 Backend 내부 소비처는 `bin/verify-runtime` 하나였고 fixture manifest dry-run으로
 전환했다. 외부 소비처인 IaC Runner host 절차는 가동 중인 인프라가 없어 후속 Issue로 전환한다.
 `ramp_up_seconds`/`duration_seconds` workload 형식과 Dataset 파일은 legacy 범위가 아니므로 유지한다.
+
+### 2026-11-22 — 허용 테스트 유형 축소
+
+결정권자 지시로 Runner 입력 검증의 허용 `test.type`을 이 문서가 정한 `SMOKE`, `STRESS`,
+`SOAK`로 맞춘다(#21). 종전 문구는 `LOAD`, `PEAK` 허용을 유지하고 전환을 #23 구현에 맡겼으나
+이 결정으로 #21에서 처리한다. 소비처 조사 결과 `LOAD` 소비처는 `performance/profiles/concurrent-10.yaml`과
+검증 fixture `performance/fixtures/profiles/mock-operating.yaml`뿐이었고 `PEAK` 소비처는 없었다.
+`concurrent-10.yaml`은 참조처가 없어 제거하고, fixture는 VU당 1회 완료로 실행 경로를 확인하는
+성격에 맞춰 `SMOKE`로 바꿨다. IaC fork(`haeinChoe/guardbench-iac`)는 `smoke.yaml`만 참조한다.

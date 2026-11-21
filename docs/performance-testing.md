@@ -125,7 +125,7 @@ workload다. 기준으로 사용한 Dataset은 조용히 수정하지 않는다.
 
 legacy 기본 실행용 `smoke.yaml`(`SMOKE`)과 `concurrent-10.yaml`(`LOAD`)은 제거했다.
 현재 실제 운영 프로필 파일은 없고 검증 fixture만 `performance/fixtures/profiles/`에 있다.
-Runner는 `SMOKE`, `LOAD`, `PEAK`, `STRESS`, `SOAK`를 허용하지만 허용 타입이 있다는 사실이
+Runner는 이 세 유형만 허용하고 다른 `test.type`은 설정 오류로 거부한다. 허용 유형이 있다는 사실이
 해당 프로필의 구현 완료를 뜻하지 않는다. 유형별 부하 수치·시간·판정 기준과 프로필 구현은 #23 범위다.
 
 ## 책임 경계
