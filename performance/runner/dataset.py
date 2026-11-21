@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .config import ConfigurationError, load_dataset
+from .config import ConfigurationError
 
 
 def _synthetic_seed_payload(manifest: dict[str, Any]) -> tuple[dict[str, Any], int]:
@@ -30,10 +30,6 @@ def _synthetic_seed_payload(manifest: dict[str, Any]) -> tuple[dict[str, Any], i
         "testCases": test_cases,
     }
     return payload, expected
-
-
-def load_seed_payload(manifest_path: Path) -> tuple[dict[str, Any], int]:
-    return seed_payload_from_manifest(load_dataset(manifest_path), manifest_path)
 
 
 def seed_payload_from_manifest(manifest: dict[str, Any], manifest_path: Path) -> tuple[dict[str, Any], int]:

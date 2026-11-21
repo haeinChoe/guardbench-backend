@@ -17,9 +17,11 @@ python3 -m performance.runner.cli \
 
 Use a new result directory for each invocation. No AWS credentials, running API,
 DB or k6 are needed. The command validates and prints the plan, writes
-`execution-plan.json` and `dry-run.json`, and preserves original `experiment.yaml`,
+`execution-plan.json`, and preserves original `experiment.yaml`,
 `profile.yaml` and `dataset.yaml` files. It makes no external calls.
-At this stage `--experiment` requires `--dry-run`; actual execution follows in #22.
+Omit `--dry-run` to execute against the configured services. Actual execution requires
+application/infrastructure revisions, API and queue connection settings, and a matching
+AWS capacity snapshot before seeding or starting k6.
 
 A manifest selects one infrastructure ID/revision, expected capacity, Profile and
 Dataset. Worker ECS, RDS and SageMaker expectations are required; API ECS is
@@ -48,11 +50,10 @@ The frozen `ExecutionPlan` exposes `to_dict()`, `profile`, `dataset`, `seed_payl
 return detached copies. The loader reads each YAML input once and retains the
 parsed seed payload so later file or environment changes cannot alter the plan.
 
-The existing default smoke CLI and explicit `--profile`/`--dataset` flows remain
-supported because the runtime verification script, Docker entrypoint and existing
-Runner consumers use them. Explicitly combining either option with `--experiment`
-is an error. Legacy dry runs retain their `dry-run.json` shape. Product APIs,
-DB schema, deployment configuration and production dependencies are unchanged.
+`--experiment` is the Runner's only, required input. Resource identifiers and expected
+capacity come only from the manifest. `bin/verify-runtime`
+dry-runs this fixture manifest to verify the image. Product APIs, DB schema,
+deployment configuration and production dependencies are unchanged.
 
 ```bash
 python3 -m unittest discover -s performance/runner -p 'test_*.py'

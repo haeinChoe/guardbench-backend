@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 import unittest
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -250,33 +250,21 @@ class ExecutionPlanTest(unittest.TestCase):
             self.assertEqual(0, cli.execute(args))
         result = self.directory / "result"
         self.assertEqual(json.loads(output.getvalue()), json.loads((result / "execution-plan.json").read_text()))
-        self.assertFalse((result / "result.json").exists())
+        self.assertEqual({"experiment.yaml", "profile.yaml", "dataset.yaml", "execution-plan.json"},
+                         {path.name for path in result.iterdir()})
         for name, source in (("experiment", self.manifest_path), ("profile", self.profile_path), ("dataset", self.dataset_path)):
             self.assertEqual(source.read_bytes(), (result / f"{name}.yaml").read_bytes())
 
-    def test_explicit_legacy_inputs_cannot_be_combined_with_experiment(self):
-        for option, path in (("--profile", self.profile_path), ("--dataset", self.dataset_path)):
-            args = cli.parser().parse_args(["--experiment", str(self.manifest_path), option, str(path), "--dry-run"])
-            with self.assertRaisesRegex(ConfigurationError, "함께"):
+    def test_experiment_is_required(self):
+        for options in ([], ["--dry-run"]):
+            with self.subTest(options=options), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                cli.parser().parse_args(options)
+
+    def test_experiment_actual_run_requires_runtime_revisions(self):
+        args = cli.parser().parse_args(["--experiment", str(self.manifest_path), "--result-dir", str(self.directory / "actual")])
+        with patch.dict(os.environ, {}, clear=True), patch.object(cli, "ApiClient", side_effect=AssertionError("unexpected API")):
+            with self.assertRaisesRegex(ConfigurationError, "APP_REVISION"):
                 cli.execute(args)
-
-    def test_experiment_actual_run_is_staged_until_capacity_preflight_integration(self):
-        args = cli.parser().parse_args(["--experiment", str(self.manifest_path)])
-        with patch.object(cli, "ApiClient", side_effect=AssertionError("unexpected API")):
-            with self.assertRaisesRegex(ConfigurationError, "capacity preflight"):
-                cli.execute(args)
-
-    def test_legacy_explicit_and_default_dry_run_consumers_remain_supported(self):
-        for explicit in (False, True):
-            result = self.directory / f"legacy-{explicit}"
-            options = ["--dry-run", "--result-dir", str(result)]
-            if explicit:
-                options += ["--profile", str(self.profile_path), "--dataset", str(self.dataset_path)]
-            with patch.dict(os.environ, {"PERF_TARGET_URL": "https://example.test", "PERF_TARGET_MODEL": "fixture"}, clear=True), redirect_stdout(io.StringIO()):
-                self.assertEqual(0, cli.execute(cli.parser().parse_args(options)))
-            plan = json.loads((result / "dry-run.json").read_text())
-            self.assertEqual(2 if explicit else 78, plan["test_case_count"])
-
 
 if __name__ == "__main__":
     unittest.main()
