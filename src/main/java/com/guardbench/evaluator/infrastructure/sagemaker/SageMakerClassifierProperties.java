@@ -1,5 +1,7 @@
 package com.guardbench.evaluator.infrastructure.sagemaker;
 
+import com.guardbench.evaluator.infrastructure.classifier.ClassifierPrompt;
+
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -19,48 +21,18 @@ record SageMakerClassifierProperties(
 ) {
 
     static final String UNCONFIGURED_ENDPOINT_NAME = "UNCONFIGURED";
-    static final String DEFAULT_USER_PROMPT_TEMPLATE = """
-            USER REQUEST:
-            %s
-
-            ASSISTANT RESPONSE:
-            %s""";
 
     SageMakerClassifierProperties {
         if (endpointName == null || endpointName.isBlank()) {
             endpointName = UNCONFIGURED_ENDPOINT_NAME;
         }
-        if (systemPrompt == null || systemPrompt.isBlank()) {
-            systemPrompt = "";
-        }
-        if (userPromptTemplate == null || userPromptTemplate.isBlank()) {
-            userPromptTemplate = DEFAULT_USER_PROMPT_TEMPLATE;
-        }
+    }
+
+    ClassifierPrompt prompt() {
+        return new ClassifierPrompt(systemPrompt, userPromptTemplate);
     }
 
     boolean isConfigured() {
-        return !UNCONFIGURED_ENDPOINT_NAME.equals(endpointName)
-                && !systemPrompt.isBlank()
-                && hasValidUserPromptTemplate();
-    }
-
-    /**
-     * {@code userPromptTemplate}이 실제로 prompt와 actualResponse를 모두 렌더링에 포함하는지 검증한다.
-     * {@code %s} 개수가 하나뿐이거나 같은 인덱스만 반복하는 잘못된 템플릿은 (prompt, actualResponse)
-     * 계약을 위반하므로 미설정으로 취급한다.
-     */
-    private boolean hasValidUserPromptTemplate() {
-        String promptSentinel = "__GUARDBENCH_PROMPT_SENTINEL__";
-        String responseSentinel = "__GUARDBENCH_RESPONSE_SENTINEL__";
-        try {
-            String rendered = userPromptTemplate.formatted(promptSentinel, responseSentinel);
-            return rendered.contains(promptSentinel) && rendered.contains(responseSentinel);
-        } catch (RuntimeException exception) {
-            return false;
-        }
-    }
-
-    String renderUserMessage(String prompt, String applicationResponse) {
-        return userPromptTemplate.formatted(prompt, applicationResponse);
+        return !UNCONFIGURED_ENDPOINT_NAME.equals(endpointName) && prompt().isConfigured();
     }
 }

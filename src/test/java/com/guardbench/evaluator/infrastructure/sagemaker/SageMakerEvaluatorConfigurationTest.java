@@ -2,11 +2,14 @@ package com.guardbench.evaluator.infrastructure.sagemaker;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 import java.time.Duration;
 import java.util.Map;
 
+import com.guardbench.evaluator.infrastructure.classifier.ClassifierEvaluatorStore;
 import com.guardbench.testrun.application.port.out.EvaluatorExecutionPort;
+import com.guardbench.testrun.application.port.out.EvaluatorRegistration;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -18,7 +21,10 @@ import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.retries.api.RetryStrategy;
 import software.amazon.awssdk.services.sagemakerruntime.SageMakerRuntimeClient;
 
-/** Worker 비활성화 시 SageMaker Evaluator SDK와 Port가 로딩되지 않는지 검증한다. */
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+
+/** Worker 모드와 classifier provider 선택에 따라 SageMaker Evaluator SDK와 Port 로딩 여부를 검증한다. */
 class SageMakerEvaluatorConfigurationTest {
 
     @Test
@@ -34,6 +40,44 @@ class SageMakerEvaluatorConfigurationTest {
     void evaluatorPortNotRegisteredWhenDisabled() {
         try (var context = createContext(Map.of("guardbench.worker.enabled", "false"))) {
             assertThat(context.getBeanNamesForType(EvaluatorExecutionPort.class)).isEmpty();
+        }
+    }
+
+    @Nested
+    @DisplayName("Provider 선택")
+    class ProviderSelectionTest {
+
+        @Test
+        @DisplayName("provider가 설정되지 않으면 SageMaker adapter와 SAGEMAKER registration을 조립한다")
+        void assemblesSageMakerByDefault() {
+            try (var context = createSelectionContext(Map.of("guardbench.worker.enabled", "true"))) {
+                assertThat(context.getBean(EvaluatorExecutionPort.class))
+                        .isInstanceOf(SageMakerClassifierEvaluatorAdapter.class);
+                assertThat(context.getBean(EvaluatorRegistration.class).providerCode()).isEqualTo("SAGEMAKER");
+            }
+        }
+
+        @Test
+        @DisplayName("provider가 openai-compatible이면 SageMakerRuntimeClient와 SageMaker registration을 만들지 않는다")
+        void skipsSageMakerWhenOtherProviderSelected() {
+            try (var context = createSelectionContext(Map.of(
+                    "guardbench.worker.enabled", "true",
+                    "guardbench.evaluator.provider", "openai-compatible"))) {
+                assertThat(context.getBeanNamesForType(SageMakerRuntimeClient.class)).isEmpty();
+                assertThat(context.getBeanNamesForType(EvaluatorExecutionPort.class)).isEmpty();
+                assertThat(context.getBeanNamesForType(EvaluatorRegistration.class)).isEmpty();
+            }
+        }
+
+        private static AnnotationConfigApplicationContext createSelectionContext(Map<String, String> properties) {
+            AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+            context.getEnvironment().getPropertySources().addFirst(
+                    new MapPropertySource("test", Map.copyOf(properties)));
+            context.registerBean(ClassifierEvaluatorStore.class, () -> mock(ClassifierEvaluatorStore.class));
+            context.registerBean(ObjectMapper.class, () -> JsonMapper.builder().build());
+            context.register(SageMakerEvaluatorConfiguration.class, SageMakerClassifierRegistrationConfiguration.class);
+            context.refresh();
+            return context;
         }
     }
 
