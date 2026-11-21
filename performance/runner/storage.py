@@ -18,20 +18,18 @@ FAILURE_FILENAME = "failure.json"
 UPLOAD_COMPLETE_FILENAME = "upload-complete.json"
 UPLOAD_COMPLETE_SCHEMA_VERSION = 1
 
+# Every completed run is driven by an experiment manifest (ADR 0016), so its inputs are required artifacts.
 RESULT_FILENAMES = (
+    "experiment.yaml",
     "profile.yaml",
     "dataset.yaml",
+    "execution-plan.json",
     "k6-summary.json",
     "aws-metrics.json",
     "result.json",
     "report.md",
 )
-# Optional experiment artifacts defined by ADR 0016; core RESULT_FILENAMES validation remains strict.
-OPTIONAL_RESULT_FILENAMES = (
-    "experiment.yaml",
-    "execution-plan.json",
-)
-PARTIAL_ARTIFACT_FILENAMES = (FAILURE_FILENAME, *RESULT_FILENAMES, *OPTIONAL_RESULT_FILENAMES)
+PARTIAL_ARTIFACT_FILENAMES = (FAILURE_FILENAME, *RESULT_FILENAMES)
 
 
 class ResultUploadError(RuntimeError):
@@ -80,10 +78,7 @@ def upload_result_directory(result_dir: Path, bucket: str, run_id: str, *, s3_cl
     missing = [name for name in RESULT_FILENAMES if not (result_dir / name).is_file()]
     if missing:
         raise ResultUploadError(f"업로드할 완료 결과 파일이 없습니다: {', '.join(missing)}")
-    files_to_upload = [
-        *RESULT_FILENAMES,
-        *(name for name in OPTIONAL_RESULT_FILENAMES if (result_dir / name).is_file()),
-    ]
+    files_to_upload = list(RESULT_FILENAMES)
     file_hashes: dict[str, str] = {}
     try:
         client = s3_client or boto3.client("s3")
