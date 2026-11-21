@@ -260,15 +260,15 @@ Runner는 성능 기준 미달(`FAIL`)과 실행 도구 오류(`ERROR`)를 구�
   - `2`: Runner 실행 오류 (`ConfigurationError`, `RunnerError`, `ApiError` 및 예기치 않은 실행 예외)
 - **`result.json` `schema_version: 2` 및 `upload-complete.json` 완료 표식**:
   - 새로 생성하는 `result.json`은 기존 필드를 모두 유지하면서 `schema_version: 2`를 포함한다.
-  - 완료 결과 업로드(`upload_result_directory`)는 6개 핵심 canonical 파일(`profile.yaml`, `dataset.yaml`, `k6-summary.json`, `aws-metrics.json`, `result.json`, `report.md`)이 모두 존재하고 `failure.json`이 없을 때만 `s3://<PERFORMANCE_RESULTS_BUCKET>/performance/results/<run-id>/`에 기존 PutObject/upload 호출만으로 업로드한다(추가 S3 읽기/복사 IAM 권한 불필요). 선택적 실행 입력 파일(`experiment.yaml`, `execution-plan.json`)이 존재하면 함께 업로드한다.
+  - 완료 결과 업로드(`upload_result_directory`)는 8개 canonical 파일(실행 입력 `experiment.yaml`, `profile.yaml`, `dataset.yaml`, `execution-plan.json`과 `k6-summary.json`, `aws-metrics.json`, `result.json`, `report.md`)이 모두 존재하고 `failure.json`이 없을 때만 `s3://<PERFORMANCE_RESULTS_BUCKET>/performance/results/<run-id>/`에 기존 PutObject/upload 호출만으로 업로드한다(추가 S3 읽기/복사 IAM 권한 불필요). 모든 실행이 manifest로 시작하므로 실행 입력 파일도 선택이 아닌 필수다.
   - 실제 업로드된 파일 목록이 모두 성공한 뒤에만 완료 표식 `upload-complete.json`(`schema_version: 1`, `status: "COMPLETE"`, `run_id`, `completed_at`, `files`, `file_sha256`, optional `result_schema_version`)을 **마지막**으로 게시한다. 중간 업로드가 실패하면 표식은 게시되지 않으며, 측정 이후 `upload` 단계 실패 시 로컬 `result.json`(PASS/FAIL)과 `report.md`는 그대로 보존하고 로컬 `failure.json` (`phase: "upload"`)을 남긴다(실패 prefix 재업로드는 시도하지 않음).
 - **`failure.json` (`schema_version: 1`) 및 조기 설정 오류 보존**:
-  - Profile/Dataset 입력 검증을 시작하기 전에 fallback `run_id`와 최소 실행 컨텍스트를 먼저 할당하므로 잘못된 `--profile`/`--dataset` 등 조기 설정 오류도 `failure.json`으로 보존한다(`--dry-run` 검증 실패는 제외).
+  - experiment manifest와 참조 Profile/Dataset 검증을 시작하기 전에 fallback `run_id`와 최소 실행 컨텍스트를 먼저 할당하므로 없는 manifest, 잘못된 YAML, 해석되지 않은 환경변수 등 조기 설정 오류도 `failure.json`으로 보존한다(`--dry-run` 검증 실패는 제외). 실행 계획을 해석하기 전 실패하면 원본 `experiment.yaml`이 있을 때 함께 보존한다.
   - 이미 존재하는 `--result-dir`는 절대 덮어쓰지 않으며, 디렉터리 생성·파일 기록·S3 실패 업로드가 추가로 실패해도 원래 예외를 그대로 전파하고 `stderr`에 원래 오류와 보존 오류를 모두 출력한다(디스크 기록이 가능한 경우에는 `preservation_errors`에도 함께 기록).
-  - 기록 항목은 `schema_version`, `run_id`, `status`(`"ERROR"`), `phase`(`preflight|seed|k6|drain|metrics|report|upload`), `started_at`, `failed_at`, `error`(`type`, `message`, optional `cause`), `inputs`(확인된 non-secret 입력 및 선택적 실행 입력인 `experiment_path`/`experiment_id`/plan 식별 메타데이터), `revisions`(확인된 `application`/`infrastructure`, 미설정/`unknown` 제외), `available_artifacts`, `preservation_errors`다.
+  - 기록 항목은 `schema_version`, `run_id`, `status`(`"ERROR"`), `phase`(`preflight|seed|k6|drain|metrics|report|upload`), `started_at`, `failed_at`, `error`(`type`, `message`, optional `cause`), `inputs`(확인된 non-secret 입력: `experiment_path`, 해석된 실행 계획의 `experiment_id`·`infrastructure_id`·`infrastructure_revision`·Profile/Dataset 식별자와 경로, seed 이후 `suite_id`), `revisions`(확인된 `application`/`infrastructure`, 미설정/`unknown` 제외), `available_artifacts`, `preservation_errors`다.
   - 예외 메시지의 URL userinfo, Bearer token, secret/key/password 패턴은 마스킹하며 비밀 환경변수는 저장하지 않는다. 미생성 `k6-summary.json`, `aws-metrics.json`, `result.json`, `report.md`는 임의로 채우지 않는다.
 - **실패 결과 별도 S3 prefix**:
-  - 실패·부분 결과 업로드(`upload_failure_directory`)는 `PERFORMANCE_RESULTS_BUCKET`이 설정된 경우 `failure.json`과 실제로 존재하는 부분 파일(선택적 실행 입력인 `experiment.yaml`, `execution-plan.json` 포함)만 아래 별도 prefix에 업로드한다(`upload-complete.json`은 제외).
+  - 실패·부분 결과 업로드(`upload_failure_directory`)는 `PERFORMANCE_RESULTS_BUCKET`이 설정된 경우 `failure.json`과 실제로 존재하는 부분 파일(실행 입력 `experiment.yaml`, `execution-plan.json` 포함)만 아래 별도 prefix에 업로드한다(`upload-complete.json`은 제외).
 
 ```text
 s3://<PERFORMANCE_RESULTS_BUCKET>/performance/failures/<run-id>/
@@ -276,7 +276,8 @@ s3://<PERFORMANCE_RESULTS_BUCKET>/performance/failures/<run-id>/
 
 - **분석 workflow(`performance-analysis-bundle.yml`)**:
   - `performance/results/<run-id>/`에 `failure.json`이 존재하거나 canonical 파일이 누락되면 CloudWatch Logs 번들링을 진행하지 않고 실패로 종료한다.
-  - `result.json`에 `schema_version`이 있는 신규 결과는 `upload-complete.json` 완료 표식(`status: "COMPLETE"`, `run_id` 일치, 6개 핵심 파일 및 `files[]` 존재, `file_sha256` 무결성)까지 모두 검증하며, 표식이 누락된 `schema_version` 결과를 legacy로 취급하지 않는다. 기존 schema-less 과거 결과만 기존 4개 canonical 파일 검증으로 호환성을 유지한다.
+  - 모든 결과에 대해 `result.json`의 `schema_version >= 2`, `upload-complete.json` 완료 표식(`status: "COMPLETE"`, `run_id` 일치, 8개 canonical 파일의 `files[]` 선언과 존재), 그리고 선언된 모든 파일의 `file_sha256` 일치를 검증한다. `file_sha256`가 없는 표식도 거부한다.
+  - `schema_version`이 없는 과거 결과의 호환 경로는 제거했다(ADR 0016 Amendments). 이런 결과는 번들링하지 않고 실패로 종료한다.
   - 불완전하거나 실패한 실행에서는 `performance/failures/<run-id>/failure.json` 존재 여부를 확인해 실패 `phase`, `error.type`과 진단 경로를 안내한다.
 
 로컬 API에 대한 입력 검증은 `--dry-run`으로 수행할 수 있다. 실제 비동기 Smoke 실행은
