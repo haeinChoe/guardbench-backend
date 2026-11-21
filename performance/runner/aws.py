@@ -69,13 +69,6 @@ class QueueInspector:
         return True
 
 
-def _required_environment(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        raise ConfigurationError(f"Infrastructure Capacity snapshot에 {name}이(가) 필요합니다.")
-    return value
-
-
 def _positive_integer(value: Any, description: str) -> int:
     if isinstance(value, bool):
         raise ConfigurationError(f"{description}는 양의 정수여야 합니다.")
@@ -86,26 +79,6 @@ def _positive_integer(value: Any, description: str) -> int:
     if parsed < 1 or str(value).strip() != str(parsed):
         raise ConfigurationError(f"{description}는 양의 정수여야 합니다.")
     return parsed
-
-
-def expected_infrastructure_capacity_from_environment() -> dict[str, int]:
-    return {
-        "work_items_concurrency": _positive_integer(
-            _required_environment("PERF_EXPECTED_WORK_ITEMS_CONCURRENCY"),
-            "PERF_EXPECTED_WORK_ITEMS_CONCURRENCY",
-        ),
-        "ecs_task_count": _positive_integer(
-            _required_environment("PERF_EXPECTED_ECS_TASK_COUNT"),
-            "PERF_EXPECTED_ECS_TASK_COUNT",
-        ),
-    }
-
-
-def _required_response_field(response: dict[str, Any], field: str, resource: str) -> Any:
-    value = response.get(field)
-    if value is None or (isinstance(value, str) and not value.strip()):
-        raise ConfigurationError(f"{resource} 조회 응답에 {field}가 없습니다.")
-    return value
 
 
 def _container_work_items_concurrency(task_definition: dict[str, Any]) -> int:
@@ -145,130 +118,31 @@ class InfrastructureCapacityCollector:
         self.rds_client = rds_client or boto3.client("rds", region_name=region_name)
         self.sagemaker_client = sagemaker_client or boto3.client("sagemaker", region_name=region_name)
 
-    def collect(self, *, expected: dict[str, Any] | None = None) -> dict[str, Any]:
-        if expected is not None:
-            from .capacity import collect_manifest_capacity
-            return collect_manifest_capacity(self, expected)
-        cluster = _required_environment("PERF_ECS_CLUSTER")
-        service = _required_environment("PERF_ECS_SERVICE")
-        rds_instance = _required_environment("PERF_RDS_INSTANCE_ID")
-        endpoint = _required_environment("PERF_SAGEMAKER_ENDPOINT_NAME")
-        variant = _required_environment("PERF_SAGEMAKER_VARIANT_NAME")
-        try:
-            ecs_service = self._ecs_service(cluster, service)
-            task_definition_arn = _required_response_field(ecs_service, "taskDefinition", "ECS service")
-            task_definition = self.ecs_client.describe_task_definition(
-                taskDefinition=task_definition_arn,
-            ).get("taskDefinition", {})
-            if not isinstance(task_definition, dict):
-                raise ConfigurationError("ECS task definition 조회 응답이 올바르지 않습니다.")
-            work_items_concurrency = _container_work_items_concurrency(task_definition)
-
-            rds_response = self.rds_client.describe_db_instances(
-                DBInstanceIdentifier=rds_instance,
-            )
-            rds_instances = rds_response.get("DBInstances", [])
-            if len(rds_instances) != 1 or not isinstance(rds_instances[0], dict):
-                raise ConfigurationError("RDS instance 조회 결과가 하나가 아닙니다.")
-            rds = rds_instances[0]
-
-            endpoint_response = self.sagemaker_client.describe_endpoint(EndpointName=endpoint)
-            variants = endpoint_response.get("ProductionVariants", [])
-            selected_variant = next(
-                (item for item in variants if isinstance(item, dict) and item.get("VariantName") == variant),
-                None,
-            )
-            if selected_variant is None:
-                raise ConfigurationError(f"SageMaker endpoint에 production variant가 없습니다: {variant}")
-
-            endpoint_config_name = _required_response_field(
-                endpoint_response, "EndpointConfigName", "SageMaker endpoint"
-            )
-            endpoint_config_response = self.sagemaker_client.describe_endpoint_config(
-                EndpointConfigName=endpoint_config_name,
-            )
-            config_variants = endpoint_config_response.get("ProductionVariants", [])
-            selected_config_variant = next(
-                (item for item in config_variants
-                 if isinstance(item, dict) and item.get("VariantName") == variant),
-                None,
-            )
-            if selected_config_variant is None:
-                raise ConfigurationError(f"SageMaker endpoint config에 production variant가 없습니다: {variant}")
-
-            desired_count = selected_variant.get("DesiredInstanceCount")
-            current_count = selected_variant.get("CurrentInstanceCount")
-            initial_count = selected_variant.get("InitialInstanceCount")
-            if desired_count is None and current_count is None and initial_count is None:
-                raise ConfigurationError("SageMaker production variant에 instance count가 없습니다.")
-
-            return {
-                "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "ecs": {
-                    "cluster_identifier": cluster,
-                    "service_identifier": service,
-                    "desired_count": _positive_integer(
-                        _required_response_field(ecs_service, "desiredCount", "ECS service"),
-                        "ECS service desiredCount",
-                    ),
-                    "running_task_count": _positive_integer(
-                        _required_response_field(ecs_service, "runningCount", "ECS service"),
-                        "ECS service runningCount",
-                    ),
-                    "task_cpu": _required_response_field(task_definition, "cpu", "ECS task definition"),
-                    "task_memory": _required_response_field(task_definition, "memory", "ECS task definition"),
-                    "work_items_concurrency": work_items_concurrency,
-                },
-                "rds": {
-                    "db_instance_identifier": _required_response_field(
-                        rds, "DBInstanceIdentifier", "RDS instance"
-                    ),
-                    "db_instance_class": _required_response_field(rds, "DBInstanceClass", "RDS instance"),
-                },
-                "sagemaker": {
-                    "endpoint_name": endpoint,
-                    "production_variant_name": _required_response_field(
-                        selected_variant, "VariantName", "SageMaker production variant"
-                    ),
-                    "instance_type": _required_response_field(
-                        selected_config_variant, "InstanceType", "SageMaker endpoint config production variant"
-                    ),
-                    "desired_instance_count": desired_count,
-                    "current_instance_count": current_count,
-                    "initial_instance_count": initial_count,
-                },
-            }
-        except ConfigurationError:
-            raise
-        except Exception as exc:
-            raise ConfigurationError("Infrastructure Capacity 조회에 실패했습니다.") from exc
-
-    def _ecs_service(self, cluster: str, service: str) -> dict[str, Any]:
-        response = self.ecs_client.describe_services(cluster=cluster, services=[service])
-        services = response.get("services", [])
-        if len(services) != 1 or not isinstance(services[0], dict):
-            raise ConfigurationError("ECS service 조회 결과가 하나가 아닙니다.")
-        return services[0]
+    def collect(self, *, expected: dict[str, Any]) -> dict[str, Any]:
+        """Observe the resources named by the experiment manifest's expected capacity."""
+        from .capacity import collect_manifest_capacity
+        return collect_manifest_capacity(self, expected)
 
 
 class CloudWatchMetricCollector:
     def __init__(self, config_path: Path, region: str | None = None, *,
-                 resources: dict[str, Any] | None = None, cloudwatch_client=None) -> None:
+                 resources: dict[str, Any], cloudwatch_client=None) -> None:
         self.config = load_yaml(config_path)
-        if resources is not None:
-            bindings = {
-                "AWS/ECS": {"ClusterName": resources["ecs"]["worker"]["cluster_identifier"].rsplit("/", 1)[-1],
-                            "ServiceName": resources["ecs"]["worker"]["service_identifier"].rsplit("/", 1)[-1]},
-                "ECS/ContainerInsights": {"ClusterName": resources["ecs"]["worker"]["cluster_identifier"].rsplit("/", 1)[-1],
-                                         "ServiceName": resources["ecs"]["worker"]["service_identifier"].rsplit("/", 1)[-1]},
-                "AWS/RDS": {"DBInstanceIdentifier": resources["rds"]["db_instance_identifier"]},
-                "AWS/SageMaker": {"EndpointName": resources["sagemaker"]["endpoint_name"],
-                                  "VariantName": resources["sagemaker"]["production_variant_name"]},
-            }
-            for definition in self.config.get("metrics", []):
-                for key, value in bindings.get(definition.get("namespace"), {}).items():
-                    if key in definition.get("dimensions", {}):
-                        definition["dimensions"][key] = value
+        worker = resources["ecs"]["worker"]
+        cluster_name = worker["cluster_identifier"].rsplit("/", 1)[-1]
+        service_name = worker["service_identifier"].rsplit("/", 1)[-1]
+        # ECS/RDS/SageMaker dimensions come only from the experiment manifest; SQS names stay environment inputs.
+        bindings = {
+            "AWS/ECS": {"ClusterName": cluster_name, "ServiceName": service_name},
+            "ECS/ContainerInsights": {"ClusterName": cluster_name, "ServiceName": service_name},
+            "AWS/RDS": {"DBInstanceIdentifier": resources["rds"]["db_instance_identifier"]},
+            "AWS/SageMaker": {"EndpointName": resources["sagemaker"]["endpoint_name"],
+                              "VariantName": resources["sagemaker"]["production_variant_name"]},
+        }
+        for definition in self.config.get("metrics", []):
+            for key, value in bindings.get(definition.get("namespace"), {}).items():
+                if key in definition.get("dimensions", {}):
+                    definition["dimensions"][key] = value
         boto3 = _boto3() if cloudwatch_client is None else None
         self.client = cloudwatch_client if cloudwatch_client is not None else boto3.client(
             "cloudwatch",

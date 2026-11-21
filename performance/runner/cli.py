@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -22,11 +21,9 @@ from .aws import (
     CloudWatchMetricCollector,
     InfrastructureCapacityCollector,
     QueueInspector,
-    expected_infrastructure_capacity_from_environment,
     queue_urls_from_environment,
 )
-from .config import ConfigurationError, load_dataset, load_profile
-from .dataset import seed_payload_from_manifest
+from .config import ConfigurationError
 from .plan import load_execution_plan
 from .storage import ResultUploadError, upload_result_directory
 
@@ -70,34 +67,6 @@ def _assert_preflight(api: ApiClient, inspector: QueueInspector, source_urls: li
     if not inspector.is_empty(queues["source"]) or not inspector.is_empty(queues["dlq"]):
         raise RunnerError("이전 테스트의 SQS source queue 또는 DLQ가 비어 있지 않습니다.")
     return {"activeRuns": 0, "queues": queues}
-
-
-def _assert_capacity_preflight(expected: dict[str, int], capacity: dict[str, Any]) -> dict[str, Any]:
-    ecs = capacity.get("ecs", {})
-    actual = {
-        "work_items_concurrency": ecs.get("work_items_concurrency"),
-        "ecs_desired_task_count": ecs.get("desired_count"),
-        "ecs_running_task_count": ecs.get("running_task_count"),
-    }
-    mismatches = []
-    if actual["work_items_concurrency"] != expected["work_items_concurrency"]:
-        mismatches.append(
-            "expected worker concurrency = " + str(expected["work_items_concurrency"])
-            + " / actual worker concurrency = " + str(actual["work_items_concurrency"])
-        )
-    if actual["ecs_desired_task_count"] != expected["ecs_task_count"]:
-        mismatches.append(
-            "expected ECS task count = " + str(expected["ecs_task_count"])
-            + " / actual ECS desired task count = " + str(actual["ecs_desired_task_count"])
-        )
-    if actual["ecs_running_task_count"] != expected["ecs_task_count"]:
-        mismatches.append(
-            "expected ECS task count = " + str(expected["ecs_task_count"])
-            + " / actual ECS running task count = " + str(actual["ecs_running_task_count"])
-        )
-    if mismatches:
-        raise RunnerError("Performance preflight FAIL:\n" + "\n".join(mismatches))
-    return {"passed": True, "expected": expected, "actual": actual}
 
 
 def _wait_for_drain(api: ApiClient, inspector: QueueInspector, source_urls: list[str],
@@ -225,7 +194,7 @@ def _report(result: dict[str, Any]) -> str:
     workload = profile["workload"]
     acceptance = profile["acceptance"]
     capacity = result["infrastructure_capacity"]
-    worker_capacity = capacity["ecs"].get("worker", capacity["ecs"])
+    worker_capacity = capacity["ecs"]["worker"]
     decision = result.get("acceptance", {}).get("status", "FAIL")
     diagnostics = result.get("test_run_diagnostics", {})
     lines = [
@@ -279,40 +248,21 @@ def _report(result: dict[str, Any]) -> str:
 
 def execute(args: argparse.Namespace) -> int:
     repo_root = _repo_root()
-    execution_plan = None
-    if args.experiment:
-        if args.profile is not None or args.dataset is not None:
-            raise ConfigurationError("--experiment는 --profile/--dataset과 함께 지정할 수 없습니다.")
-        execution_plan = load_execution_plan(Path(args.experiment))
-        profile_path = execution_plan.source_paths["profile"]
-        dataset_path = execution_plan.source_paths["dataset"]
-        profile = execution_plan.profile
-        dataset = execution_plan.dataset
-        payload = execution_plan.seed_payload
-        test_case_count = execution_plan.test_case_count
-    else:
-        profile_path = Path(args.profile or repo_root / "performance/profiles/smoke.yaml").resolve()
-        dataset_path = Path(args.dataset or repo_root / "performance/datasets/baseline-v1.yaml").resolve()
-        profile = load_profile(profile_path)
-        dataset = load_dataset(dataset_path)
-        payload, test_case_count = seed_payload_from_manifest(dataset, dataset_path)
+    execution_plan = load_execution_plan(Path(args.experiment))
+    profile = execution_plan.profile
+    dataset = execution_plan.dataset
+    payload = execution_plan.seed_payload
+    test_case_count = execution_plan.test_case_count
     run_id = f"{profile['test']['id']}-{_now().strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
     result_dir = Path(args.result_dir).resolve() if args.result_dir else repo_root / "performance/results" / run_id
     result_dir.mkdir(parents=True, exist_ok=False)
-    if execution_plan:
-        for name, source in execution_plan.source_bytes.items():
-            (result_dir / f"{name}.yaml").write_bytes(source)
-        (result_dir / "execution-plan.json").write_text(
-            json.dumps(execution_plan.to_dict(), indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    else:
-        shutil.copyfile(profile_path, result_dir / "profile.yaml")
-        shutil.copyfile(dataset_path, result_dir / "dataset.yaml")
+    for name, source in execution_plan.source_bytes.items():
+        (result_dir / f"{name}.yaml").write_bytes(source)
+    plan = execution_plan.to_dict()
+    (result_dir / "execution-plan.json").write_text(
+        json.dumps(plan, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 
     if args.dry_run:
-        plan = execution_plan.to_dict() if execution_plan else {
-            "run_id": run_id, "profile": str(profile_path), "dataset": str(dataset_path),
-            "test_case_count": test_case_count, "k6_script": str(repo_root / "performance/k6/test-run.js")}
-        (result_dir / "dry-run.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(plan, indent=2))
         return 0
 
@@ -325,18 +275,14 @@ def execute(args: argparse.Namespace) -> int:
         raise ConfigurationError("실제 성능 실행에는 PERF_BASE_URL이 필요합니다.")
     api = ApiClient(base_url)
     source_urls, dlq_urls = queue_urls_from_environment()
-    expected_capacity = (execution_plan.to_dict()["infrastructure"]["expected"] if execution_plan
-                         else expected_infrastructure_capacity_from_environment())
+    expected_capacity = plan["infrastructure"]["expected"]
     inspector = QueueInspector()
-    metric_collector = (CloudWatchMetricCollector(repo_root / "performance/metrics/aws.yaml", resources=expected_capacity)
-                        if execution_plan else CloudWatchMetricCollector(repo_root / "performance/metrics/aws.yaml"))
+    metric_collector = CloudWatchMetricCollector(repo_root / "performance/metrics/aws.yaml", resources=expected_capacity)
     metric_collector.validate_configuration()
     preflight = _assert_preflight(api, inspector, source_urls, dlq_urls)
-    collector = InfrastructureCapacityCollector()
-    infrastructure_capacity = collector.collect(expected=expected_capacity) if execution_plan else collector.collect()
-    preflight["capacity"] = (assert_manifest_capacity(expected_capacity, infrastructure_capacity) if execution_plan
-                             else _assert_capacity_preflight(expected_capacity, infrastructure_capacity))
-    worker_capacity = infrastructure_capacity["ecs"].get("worker", infrastructure_capacity["ecs"])
+    infrastructure_capacity = InfrastructureCapacityCollector().collect(expected=expected_capacity)
+    preflight["capacity"] = assert_manifest_capacity(expected_capacity, infrastructure_capacity)
+    worker_capacity = infrastructure_capacity["ecs"]["worker"]
     infrastructure_capacity["revisions"] = revisions
 
     api.health_check()
@@ -407,10 +353,9 @@ def execute(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    command = argparse.ArgumentParser(description="Run a repeatable GuardBench performance profile.")
-    command.add_argument("--experiment", help="Experiment manifest v1 with expected capacity and Profile/Dataset references.")
-    command.add_argument("--profile", help="Workload profile (default: performance/profiles/smoke.yaml).")
-    command.add_argument("--dataset", help="Dataset manifest (default: performance/datasets/baseline-v1.yaml).")
+    command = argparse.ArgumentParser(description="Run a repeatable GuardBench performance experiment.")
+    command.add_argument("--experiment", required=True,
+                         help="Experiment manifest v1 with expected capacity and Profile/Dataset references.")
     command.add_argument("--result-dir")
     command.add_argument("--dry-run", action="store_true", help="Validate inputs and print the execution plan.")
     return command

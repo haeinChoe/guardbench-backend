@@ -23,7 +23,7 @@ def _variant(items, name, resource):
 
 
 def collect_manifest_capacity(collector, expected: dict[str, Any]) -> dict[str, Any]:
-    # Imports stay local to avoid coupling legacy collection to this schema.
+    # aws.py imports this module lazily; keep this import local to avoid a cycle.
     from .aws import _container_work_items_concurrency
     actual = {"captured_at": datetime.now(timezone.utc).isoformat(), "ecs": {}}
     resource = "AWS"
