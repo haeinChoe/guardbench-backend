@@ -9,12 +9,12 @@ command -v k6 >/dev/null
 python3.11 --version
 k6 version
 test -x "$root/bin/run-performance"
-test -f "$root/performance/fixtures/experiments/mock-small-operating.yaml"
+test -f "$root/performance/fixtures/experiments/smoke.yaml"
 test -f "$root/performance/datasets/baseline-v1.yaml"
 test -f "$root/http/testsets/notion-testset-import.http"
 cd "$root"
 python3.11 -c 'import performance.runner'
 "$root/bin/run-performance" --dry-run \
-  --experiment "$root/performance/fixtures/experiments/mock-small-operating.yaml" \
+  --experiment "$root/performance/fixtures/experiments/smoke.yaml" \
   --result-dir "$(mktemp -d)/dry-run" >/dev/null
 echo "GuardBench Performance Runner container verification passed."

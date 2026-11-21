@@ -109,7 +109,7 @@ ADR 0016이 선택한 테스트 유형은 `SMOKE`·`STRESS`·`SOAK`이며 Runner
 새로 정의한다.
 
 검증용 곡선은 [`staged-stress.yaml`](../fixtures/profiles/staged-stress.yaml)에 있다. 이 fixture의
-부하/acceptance 숫자는 짧은 로컬 기능 검증용이다. `small` 자원값,
+부하/acceptance 숫자는 짧은 로컬 기능 검증용이다. 실제 인프라 자원값,
 운영 목표, 한계 지점 또는 실제 AWS 성능 baseline을 뜻하지 않는다. Profile은 infrastructure
 capacity를 바꾸지 않는다. acceptance는 실행 전에 고정하고 실행 후에 바꾸지 않는다.
 

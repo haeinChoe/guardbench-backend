@@ -140,13 +140,13 @@ class WorkloadStagesTest(unittest.TestCase):
 
     def test_fixed_infrastructure_manifest_supports_single_target_and_stress_stage_profiles(self):
         base_manifest = yaml.safe_load(
-            (ROOT / "fixtures/experiments/mock-small-operating.yaml").read_text(encoding="utf-8")
+            (ROOT / "fixtures/experiments/smoke.yaml").read_text(encoding="utf-8")
         )
-        dataset_path = str((ROOT / "fixtures/datasets/mock-two-cases.yaml").resolve())
+        dataset_path = str((ROOT / "fixtures/datasets/two-cases.yaml").resolve())
         with tempfile.TemporaryDirectory() as directory:
             tmp = Path(directory)
             plans = {}
-            for name in ("mock-operating", "staged-stress"):
+            for name in ("smoke", "staged-stress"):
                 manifest = copy.deepcopy(base_manifest)
                 manifest["id"] = f"fixture-{name}"
                 manifest["profile"] = str((ROOT / f"fixtures/profiles/{name}.yaml").resolve())
@@ -155,7 +155,7 @@ class WorkloadStagesTest(unittest.TestCase):
                 manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
                 plans[name] = load_execution_plan(manifest_path).to_dict()
 
-            single_plan = plans["mock-operating"]
+            single_plan = plans["smoke"]
             stress_plan = plans["staged-stress"]
             self.assertEqual(single_plan["infrastructure"], stress_plan["infrastructure"])
             self.assertNotIn("stages", single_plan["profile"]["workload"])

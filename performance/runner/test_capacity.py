@@ -10,7 +10,7 @@ from performance.runner.config import ConfigurationError
 from performance.runner.plan import load_execution_plan
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = ROOT / 'performance/fixtures/experiments/mock-small-operating.yaml'
+MANIFEST = ROOT / 'performance/fixtures/experiments/smoke.yaml'
 
 
 def clients(expected):
