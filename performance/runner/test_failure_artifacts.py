@@ -452,7 +452,7 @@ class FailureArtifactsTest(unittest.TestCase):
         api.list_runs.side_effect = None
         api.list_runs.return_value = []
         dir_report_fmt = self.temp_dir / "report-fmt-fail"
-        with patch.object(cli, "_report", side_effect=RuntimeError("template boom")):
+        with patch.object(cli, "render_report", side_effect=RuntimeError("template boom")):
             with self.assertRaises(RuntimeError):
                 cli.execute(self._args(dir_report_fmt))
         failure_report_fmt = self._read_failure(dir_report_fmt)
@@ -508,6 +508,7 @@ class FailureArtifactsTest(unittest.TestCase):
                 self.assertEqual(k6_exit, result["k6"]["exit_code"])
                 for key in (
                     "run_id", "started_at", "finished_at", "revisions", "infrastructure_capacity",
+                    "execution_plan", "scenario",
                     "experiment", "dataset", "profile", "k6", "failure_categories",
                     "test_run_diagnostics", "preflight", "drain", "final_dlq", "aws_metrics", "acceptance",
                 ):
@@ -787,6 +788,29 @@ sys.exit(1)
                 )
                 return completed, summary_file.read_text(encoding="utf-8")
 
+        def canonical_result_doc(run_id: str) -> dict:
+            return {
+                "schema_version": 2,
+                "run_id": run_id,
+                "started_at": "2026-11-20T00:00:00Z",
+                "finished_at": "2026-11-20T00:05:00Z",
+                "execution_plan": {
+                    "schema_version": 1,
+                    "experiment": {"id": "exp-1"},
+                    "infrastructure": {
+                        "id": "fixture-infra",
+                        "revision": "fixture-v1",
+                        "expected": {"ecs": {"worker": {"desired_count": 1}}},
+                    },
+                    "sources": {
+                        "experiment": {"path": "/tmp/experiment.yaml", "sha256": "a" * 64},
+                        "profile": {"path": "/tmp/profile.yaml", "sha256": "b" * 64},
+                        "dataset": {"path": "/tmp/dataset.yaml", "sha256": "c" * 64},
+                    },
+                },
+                "scenario": {"id": "FIXTURE-SMOKE", "type": "SMOKE"},
+            }
+
         def write_canonical(prefix: Path, run_id: str, *, result_doc: dict | None = None, include_marker: bool = True,
                             include_hashes: bool = True, omit_file: str | None = None, undeclared: str | None = None,
                             corrupt_hash: str | None = None):
@@ -798,7 +822,7 @@ sys.exit(1)
                 "execution-plan.json": '{"schema_version": 1}\n',
                 "k6-summary.json": "{}",
                 "aws-metrics.json": "{}",
-                "result.json": json.dumps(result_doc if result_doc is not None else {"schema_version": 2, "run_id": run_id}),
+                "result.json": json.dumps(result_doc if result_doc is not None else canonical_result_doc(run_id)),
                 "report.md": "# report",
             }
             for name, content in contents.items():
@@ -831,7 +855,7 @@ sys.exit(1)
         # 2. Missing marker, mismatched run_id or missing file_sha256 -> rejected
         expect_rejected(lambda rp, fp, rid: write_canonical(rp, rid, include_marker=False),
                         "upload-complete.json is missing")
-        expect_rejected(lambda rp, fp, rid: write_canonical(rp, "other-run", result_doc={"schema_version": 2, "run_id": rid}),
+        expect_rejected(lambda rp, fp, rid: write_canonical(rp, "other-run", result_doc=canonical_result_doc(rid)),
                         "upload-complete.json is invalid")
         expect_rejected(lambda rp, fp, rid: write_canonical(rp, rid, include_hashes=False),
                         "upload-complete.json is invalid")
@@ -842,6 +866,35 @@ sys.exit(1)
             with self.subTest(result_doc=result_doc):
                 expect_rejected(lambda rp, fp, rid, doc=result_doc: write_canonical(rp, rid, result_doc=doc),
                                 "does not declare schema_version >= 2")
+
+        # 3b. result.json missing execution_plan.experiment.id or infrastructure/scenario identity -> rejected
+        missing_exp_docs = [
+            {"schema_version": 2, "run_id": "smoke-run-1"},
+            {**canonical_result_doc("smoke-run-1"), "execution_plan": {}},
+            {**canonical_result_doc("smoke-run-1"), "execution_plan": {
+                **canonical_result_doc("smoke-run-1")["execution_plan"], "experiment": {}}},
+            {**canonical_result_doc("smoke-run-1"), "execution_plan": {
+                **canonical_result_doc("smoke-run-1")["execution_plan"], "experiment": {"id": "   "}}},
+            {**canonical_result_doc("smoke-run-1"), "execution_plan": {
+                **canonical_result_doc("smoke-run-1")["execution_plan"], "experiment": {"id": None}}},
+        ]
+        for bad_doc in missing_exp_docs:
+            with self.subTest(bad_doc=bad_doc):
+                expect_rejected(lambda rp, fp, rid, doc=bad_doc: write_canonical(rp, rid, result_doc=doc),
+                                "missing required .execution_plan.experiment.id")
+
+        missing_identity_docs = [
+            {**canonical_result_doc("smoke-run-1"), "execution_plan": {
+                **canonical_result_doc("smoke-run-1")["execution_plan"], "infrastructure": {"revision": "fixture-v1"}}},
+            {**canonical_result_doc("smoke-run-1"), "execution_plan": {
+                **canonical_result_doc("smoke-run-1")["execution_plan"], "infrastructure": {"id": "fixture-infra"}}},
+            {**canonical_result_doc("smoke-run-1"), "scenario": {"id": "FIXTURE-SMOKE"}},
+            {**canonical_result_doc("smoke-run-1"), "scenario": {"type": "SMOKE"}},
+        ]
+        for bad_doc in missing_identity_docs:
+            with self.subTest(bad_identity=bad_doc):
+                expect_rejected(lambda rp, fp, rid, doc=bad_doc: write_canonical(rp, rid, result_doc=doc),
+                                "missing required infrastructure or scenario identity fields")
 
         # 4. Result files without run inputs or marker -> rejected as incomplete
         def setup_without_inputs(rp: Path, fp: Path, rid: str):
@@ -887,6 +940,122 @@ sys.exit(1)
             (rp / FAILURE_FILENAME).write_text("{}", encoding="utf-8")
 
         expect_rejected(setup_contaminated, "contains failure.json")
+
+    def test_analysis_bundle_workflow_records_experiment_identity_in_summary_and_metadata(self):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/performance-analysis-bundle.yml").read_text(encoding="utf-8")
+        )
+        steps = workflow["jobs"]["collect"]["steps"]
+        window_step = next(step for step in steps if step.get("name") == "Resolve CloudWatch query window")
+        logs_step = next(step for step in steps if step.get("name") == "Collect CloudWatch Logs Insights diagnostics")
+
+        fake_logs_aws = """#!/usr/bin/env python3
+import json, sys
+args = sys.argv[1:]
+if args[:2] == ["logs", "start-query"]:
+    print("query-123")
+    sys.exit(0)
+if args[:2] == ["logs", "get-query-results"]:
+    print(json.dumps({"status": "Complete", "results": []}))
+    sys.exit(0)
+sys.exit(2)
+"""
+        with tempfile.TemporaryDirectory() as run_tmp:
+            root = Path(run_tmp)
+            work_dir = root / "work"
+            bin_dir = root / "bin"
+            (work_dir / "bundle" / "runner").mkdir(parents=True)
+            (work_dir / "bundle" / "logs").mkdir(parents=True)
+            bin_dir.mkdir()
+
+            aws_bin = bin_dir / "aws"
+            aws_bin.write_text(fake_logs_aws, encoding="utf-8")
+            aws_bin.chmod(0o755)
+
+            result_payload = {
+                "schema_version": 2,
+                "run_id": "smoke-run-1",
+                "started_at": "2026-11-20T00:00:00Z",
+                "finished_at": "2026-11-20T00:05:00Z",
+                "execution_plan": {
+                    "schema_version": 1,
+                    "experiment": {"id": "exp-identity-1"},
+                    "infrastructure": {
+                        "id": "fixture-infra",
+                        "revision": "fixture-v1",
+                        "expected": {"ecs": {"worker": {"desired_count": 1}}},
+                    },
+                    "sources": {
+                        "experiment": {"path": "/tmp/experiment.yaml", "sha256": "a" * 64},
+                    },
+                },
+                "scenario": {"id": "FIXTURE-STAGED-STRESS", "type": "STRESS"},
+            }
+            (work_dir / "bundle" / "runner" / "result.json").write_text(
+                json.dumps(result_payload), encoding="utf-8"
+            )
+
+            summary_file = root / "step-summary.md"
+            output_file = root / "github-output.txt"
+            summary_file.write_text("", encoding="utf-8")
+            output_file.write_text("", encoding="utf-8")
+
+            env = dict(
+                os.environ,
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                RUN_ID="smoke-run-1",
+                RESULTS_BUCKET="test-bucket",
+                LOG_GROUP="/ecs/perf",
+                GITHUB_STEP_SUMMARY=str(summary_file),
+                GITHUB_OUTPUT=str(output_file),
+            )
+            window_res = subprocess.run(
+                ["bash", "-c", window_step["run"]],
+                cwd=work_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, window_res.returncode, window_res.stderr)
+
+            outputs = dict(
+                line.split("=", 1)
+                for line in output_file.read_text(encoding="utf-8").splitlines()
+                if "=" in line
+            )
+            summary_text = summary_file.read_text(encoding="utf-8")
+            for expected in (
+                "- Experiment ID: exp-identity-1",
+                "- Infrastructure ID: fixture-infra",
+                "- Infrastructure revision: fixture-v1",
+                "- Scenario ID: FIXTURE-STAGED-STRESS",
+                "- Scenario type: STRESS",
+            ):
+                self.assertIn(expected, summary_text)
+
+            logs_env = dict(
+                env,
+                START_EPOCH=outputs["start_epoch"],
+                END_EPOCH=outputs["end_epoch"],
+            )
+            logs_res = subprocess.run(
+                ["bash", "-c", logs_step["run"]],
+                cwd=work_dir,
+                env=logs_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, logs_res.returncode, logs_res.stderr)
+
+            metadata = json.loads((work_dir / "bundle" / "bundle-metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual("smoke-run-1", metadata["run_id"])
+            self.assertEqual("exp-identity-1", metadata["experiment_id"])
+            self.assertEqual("fixture-infra", metadata["infrastructure_id"])
+            self.assertEqual("fixture-v1", metadata["infrastructure_revision"])
+            self.assertEqual("FIXTURE-STAGED-STRESS", metadata["scenario_id"])
+            self.assertEqual("STRESS", metadata["scenario_type"])
 
     def test_completed_upload_requires_run_inputs_and_hashes_every_file(self):
         def populate(directory: Path, *, skip: str | None = None) -> None:

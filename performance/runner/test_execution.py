@@ -79,6 +79,10 @@ class PerformanceExecutionTest(unittest.TestCase):
         self.assertEqual(0, cli.execute(self.args))
 
         result = json.loads((self.result_dir / "result.json").read_text())
+        plan = json.loads((self.result_dir / "execution-plan.json").read_text())
+        self.assertEqual(2, result["schema_version"])
+        self.assertEqual(plan, result["execution_plan"])
+        self.assertEqual({"id": "FIXTURE-SMOKE", "type": "SMOKE"}, result["scenario"])
         self.assertEqual(7, result["dataset"]["suite_id"])
         self.assertEqual("fixture-db", result["infrastructure_capacity"]["rds"]["db_instance_identifier"])
         self.assertEqual(self.capacity.collect.return_value["ecs"], result["infrastructure_capacity"]["ecs"])
@@ -93,9 +97,31 @@ class PerformanceExecutionTest(unittest.TestCase):
         self.subprocess.assert_not_called()
         for name in ("report.md", "execution-plan.json", "experiment.yaml", "profile.yaml", "dataset.yaml"):
             self.assertTrue((self.result_dir / name).is_file(), name)
-        self.assertNotIn("Iteration validity", (self.result_dir / "report.md").read_text())
+        report = (self.result_dir / "report.md").read_text()
+        self.assertNotIn("Iteration validity", report)
+        for expected in (
+            "fixture-smoke",
+            "fixture-infra",
+            "fixture-v1",
+            "FIXTURE-SMOKE",
+            "SMOKE",
+            "fixture-two-cases-v1",
+            "2 TestCases",
+            "(2, 2, 1)",
+            "최대 configured VU target; VU 하나가 TestRun 하나 완료를 기다림",
+            "Selected Infrastructure Capacity (Manifest Expected)",
+            "Observed Infrastructure Capacity Snapshot (Pre-Run)",
+            "Input Sources",
+            plan["sources"]["experiment"]["path"],
+            plan["sources"]["experiment"]["sha256"],
+            plan["sources"]["profile"]["sha256"],
+            plan["sources"]["dataset"]["sha256"],
+        ):
+            self.assertIn(expected, report)
 
     def test_result_uses_resolved_snapshots_when_files_change_during_workload(self):
+        expected_plan = load_execution_plan(self.manifest_path).to_dict()
+
         def mutate_sources(*args):
             for path in (self.manifest_path, self.profile_path, self.dataset_path):
                 path.write_text("invalid after workload started")
@@ -108,6 +134,8 @@ class PerformanceExecutionTest(unittest.TestCase):
         self.assertEqual("fixture-two-cases-v1", result["dataset"]["id"])
         self.assertEqual(2, result["dataset"]["test_case_count"])
         self.assertEqual("FIXTURE-SMOKE", result["profile"]["test"]["id"])
+        self.assertEqual({"id": "FIXTURE-SMOKE", "type": "SMOKE"}, result["scenario"])
+        self.assertEqual(expected_plan["sources"], result["execution_plan"]["sources"])
         self.assertEqual(2, len(self.api.create_suite.call_args.args[0]["testCases"]))
 
     def test_staged_workload_preserves_curve_acceptance_and_iteration_validity_in_report(self):
@@ -126,12 +154,82 @@ class PerformanceExecutionTest(unittest.TestCase):
         result = json.loads((self.result_dir / "result.json").read_text())
         self.assertEqual(3, result["experiment"]["concurrent_test_runs"])
         self.assertEqual(5, len(result["profile"]["workload"]["stages"]))
+        self.assertEqual(5, len(result["execution_plan"]["profile"]["workload"]["stages"]))
+        self.assertEqual({"id": "FIXTURE-STAGED-STRESS", "type": "STRESS"}, result["scenario"])
         self.assertEqual(0, result["profile"]["acceptance"]["completion"]["failure_rate"])
         report = (self.result_dir / "report.md").read_text()
         self.assertIn("max configured VU target 3", report)
         self.assertIn("1s → 0 VUs", report)
         self.assertIn("'interrupted': 0", report)
         self.assertIn("**PASS**", report)
+
+    def test_same_infrastructure_distinguishes_scenarios_and_definition_revisions(self):
+        work_dir = self.manifest_path.parent
+        stress_profile = work_dir / "staged-stress.yaml"
+        shutil.copyfile(MANIFEST.parent.parent / "profiles/staged-stress.yaml", stress_profile)
+
+        base_manifest = yaml.safe_load(self.manifest_path.read_text())
+        stress_manifest = copy.deepcopy(base_manifest)
+        stress_manifest["id"] = "fixture-stress"
+        stress_manifest["profile"] = str(stress_profile)
+        stress_manifest_path = work_dir / "stress-experiment.yaml"
+        stress_manifest_path.write_text(yaml.safe_dump(stress_manifest))
+
+        v2_manifest = copy.deepcopy(base_manifest)
+        v2_manifest["id"] = "fixture-smoke-v2"
+        v2_manifest["infrastructure"]["revision"] = "fixture-v2"
+        v2_manifest_path = work_dir / "v2-experiment.yaml"
+        v2_manifest_path.write_text(yaml.safe_dump(v2_manifest))
+
+        def run_for(manifest_path: Path, suffix: str, staged: bool = False):
+            if staged:
+                def run_staged(*args):
+                    summary = passing_summary()
+                    summary["metrics"]["test_run_iterations_started"] = {"values": {"count": 1}}
+                    summary["metrics"]["test_run_iterations_completed"] = {"values": {"count": 1}}
+                    args[4].write_text(json.dumps(summary))
+                    return 0
+                self.k6.side_effect = run_staged
+            else:
+                def run_normal(*args):
+                    args[4].write_text(json.dumps(passing_summary()))
+                    return 0
+                self.k6.side_effect = run_normal
+
+            result_dir = self.result_dir.parent / suffix
+            args = cli.parser().parse_args(["--experiment", str(manifest_path), "--result-dir", str(result_dir)])
+            self.assertEqual(0, cli.execute(args))
+            return json.loads((result_dir / "result.json").read_text()), (result_dir / "report.md").read_text()
+
+        smoke_res, smoke_rep = run_for(self.manifest_path, "run-smoke-v1")
+        stress_res, stress_rep = run_for(stress_manifest_path, "run-stress-v1", staged=True)
+        v2_res, v2_rep = run_for(v2_manifest_path, "run-smoke-v2")
+
+        self.assertEqual("fixture-infra", smoke_res["execution_plan"]["infrastructure"]["id"])
+        self.assertEqual("fixture-infra", stress_res["execution_plan"]["infrastructure"]["id"])
+        self.assertEqual("fixture-infra", v2_res["execution_plan"]["infrastructure"]["id"])
+
+        self.assertEqual("fixture-v1", smoke_res["execution_plan"]["infrastructure"]["revision"])
+        self.assertEqual("fixture-v1", stress_res["execution_plan"]["infrastructure"]["revision"])
+        self.assertNotEqual(smoke_res["scenario"], stress_res["scenario"])
+        self.assertEqual({"id": "FIXTURE-STAGED-STRESS", "type": "STRESS"}, stress_res["scenario"])
+        self.assertNotEqual(
+            smoke_res["execution_plan"]["sources"]["profile"]["sha256"],
+            stress_res["execution_plan"]["sources"]["profile"]["sha256"],
+        )
+        self.assertEqual(2, smoke_res["experiment"]["concurrent_test_runs"])
+        self.assertEqual(3, stress_res["experiment"]["concurrent_test_runs"])
+        self.assertIn("FIXTURE-STAGED-STRESS", stress_rep)
+        self.assertIn("max configured VU target 3", stress_rep)
+
+        self.assertEqual(smoke_res["scenario"], v2_res["scenario"])
+        self.assertEqual("fixture-v2", v2_res["execution_plan"]["infrastructure"]["revision"])
+        self.assertNotEqual(
+            smoke_res["execution_plan"]["sources"]["experiment"]["sha256"],
+            v2_res["execution_plan"]["sources"]["experiment"]["sha256"],
+        )
+        self.assertIn("fixture-v2", v2_rep)
+        self.assertNotIn("fixture-v2", smoke_rep)
 
     def test_active_run_blocks_seed_and_workload(self):
         self.api.list_runs.return_value = [{"id": 9}]
