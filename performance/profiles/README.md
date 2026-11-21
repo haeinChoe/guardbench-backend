@@ -2,9 +2,9 @@
 
 성능 실험은 다음 네 개의 개념을 분리한다.
 
-1. **Dataset / Dataset Size**: 한 TestRun이 처리할 TestCase 집합과 개수다. 현재 확정된 Dataset은 `baseline-v1` 78건뿐이며, `SMALL/MEDIUM/LARGE`의 경계값은 아직 정하지 않는다.
-2. **Test Type**: 실험 목적이다. Runner는 `SMOKE`, `LOAD`, `PEAK`, `STRESS`, `SOAK`를 허용한다.
-3. **Workload**: 시스템에 가하는 부하 값이다. Profile의 `concurrent_test_runs`, `ramp_up_seconds`, `duration_seconds`, `max_iterations_per_vu`, timeout/polling 값이 여기에 속한다.
+1. **Dataset / Dataset Size**: 한 TestRun이 처리할 TestCase 집합과 개수다. 기본 Dataset은 `baseline-v1` 78건이고 별도 `large-suite-491-v1` 491건 파일도 있다. 두 Dataset의 내용·버전은 고정하며, `SMALL/MEDIUM/LARGE`의 경계값은 아직 정하지 않는다.
+2. **Test Type**: 실험 목적이다. 사용할 유형은 `SMOKE`·`STRESS`·`SOAK`이며 Runner는 이 세 유형만 허용한다.
+3. **Workload**: 시스템에 가하는 부하 값이다. Profile의 `concurrent_test_runs`, `ramp_up_seconds`/`duration_seconds` 또는 단계형 `stages`, `max_iterations_per_vu`, timeout/polling 값이 여기에 속한다.
 4. **Infrastructure Capacity**: ECS task 수, CPU/memory, RDS 사양, SageMaker endpoint capacity처럼 시스템이 공급하는 configured resource와 dependency 상태다. Performance Profile이 소유하지 않고 Terraform/배포 설정이 소유한다.
 
 따라서 Profile은 **Test Type + Workload + acceptance criteria + Application Target**을 정의한다. Dataset은 `performance/datasets/`에서 별도로 선택하고, Infrastructure Capacity는 배포 입력과 Infrastructure revision으로 별도 추적한다.
@@ -16,10 +16,11 @@ Performance는 dev와 분리된 CPU/memory 입력(예: `performance_api_cpu`/`pe
 실행 전 적용값 검증은 [#200](https://github.com/GuardBench/guardbench-backend/issues/200)의
 Backend 계약을 따른다.
 
-Runner는 Profile에서 capacity를 읽지 않는다. 실행 대상 Performance Service의 active Task
-Definition을 조회해 `result.json.infrastructure_capacity.ecs.task_cpu`와
-`ecs.task_memory`에 실제 적용된 CPU/memory를 기록한다. 이 snapshot은 입력 의도나 capacity
-level 이름이 아니라 AWS configured capacity의 실행 시점 증거다.
+Runner는 Profile에서 capacity를 읽지 않는다. [ADR 0016](../../docs/decisions/0016-performance-experiment-plan.md)의
+manifest 경로는 `infrastructure.expected`와 AWS 조회값을 대조하고 snapshot을
+`result.json.infrastructure_capacity.ecs.worker`와 선택적 `ecs.api`에 구분해 기록한다.
+manifest 없는 기존 경로의 `ecs.task_cpu`·`ecs.task_memory` 구조는 기존 소비처를 위해 유지한다.
+이 snapshot은 인프라 수준 이름이 아닌 실행 전 AWS configured capacity의 조회 증거다.
 
 MVP의 Capacity 실험 범위는 주요 변경 대상과 고정·관찰 대상을 구분한다.
 
@@ -34,9 +35,10 @@ storage/IOPS/connection pool 튜닝은 MVP 실험 범위가 아니다. RDS와 SQ
 
 현재 TestRun은 Application Target 응답을 SageMaker Response Behavior Classifier로 분류한 뒤 Assertion/Quality Gate까지 비동기로 처리한다. Profile은 classifier 설정을 입력으로 받지 않으며 classifier endpoint/prompt 등은 Backend 배포 설정이 소유한다.
 
-## 현재 확정된 Profile
+## 현재 프로필 파일과 기본 실행
 
-`smoke.yaml`이 현재 유일하게 수치까지 확정된 canonical Profile이다.
+현재 `performance/profiles/`에는 `smoke.yaml`(`SMOKE`)이 있다.
+기본 실행에는 `smoke.yaml`을 사용하며 아래 값은 기존 기본 프로필의 설정이다.
 
 - Test Type: `SMOKE`
 - Dataset: 별도 선택, 현재 기본값 `baseline-v1` 78 TestCases
@@ -45,9 +47,13 @@ storage/IOPS/connection pool 튜닝은 MVP 실험 범위가 아니다. RDS와 SQ
 - completion timeout: `300s`
 - polling interval: `2s`
 
-`smoke.yaml`은 현재 유일한 실행 가능한 canonical Profile이다. Profile 이름은 Dataset Size나 Infrastructure Capacity를 의미하지 않는다.
+`STRESS`·`SOAK`는 입력 검증에서 허용하는 유형이지만 이 디렉터리에 해당
+프로필 파일은 없다. 검증용 fixture 파일과 실제 실행 프로필을 구분한다.
+Profile 이름은 Dataset Size나 Infrastructure Capacity를 의미하지 않는다.
 
-LOAD/PEAK/STRESS/SOAK의 구체적인 workload 값과 Dataset Size의 `SMALL/MEDIUM/LARGE` 경계는 사전에 고정하지 않는다. Smoke 결과와 이후 단계적 실험 결과를 보고 정한다. 새 Profile은 Runner 핵심 로직에 타입별 분기문을 추가하지 않고 동일 schema로 추가한다.
+사용할 `SMOKE`·`STRESS`·`SOAK`의 목적은 ADR 0016에 정의한다. 유형별 부하 수치·시간·판정 기준과
+신규 프로필은 #23에서 구현한다. Dataset Size의 `SMALL/MEDIUM/LARGE` 경계는 별도 미정이며
+인프라 구성 수준과 같은 축이 아니다. 새 Profile은 타입 이름별 분기 없이 같은 schema로 표현한다.
 
 ## 실험 진행 규칙
 

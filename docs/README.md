@@ -34,7 +34,7 @@
 | 도메인 | [핵심 모델](domain/core-model.md) | APPROVED | Backend | 2026-09-01 | [도메인 모델 정의](https://app.notion.com/p/3c0eeed6b62d81b48c03ed6034440936) |
 | 도메인 | [평가 계약](domain/evaluation-contract.md) | APPROVED | Backend | 2026-09-01 | [MVP 평가 계약](https://app.notion.com/p/3c3eeed6b62d8120a57eebaa13b6ed27) |
 | API | [API 안내](api/README.md) · [OpenAPI](api/openapi.yaml) | APPROVED | Backend | 2026-09-01 | [API 명세서](https://app.notion.com/p/3c0eeed6b62d805dac0be8db487b1359) |
-| 성능 테스트 | [성능 테스트 운영](performance-testing.md) | APPROVED | Backend | 2026-09-01 | 없음 |
+| 성능 테스트 | [성능 테스트 운영](performance-testing.md) | APPROVED | Backend | 2026-11-21 | 없음 |
 | 아키텍처 | [시스템 개요](architecture/system-overview.md) | APPROVED | Backend | 2026-09-01 | [도메인 모델 정의](https://app.notion.com/p/3c0eeed6b62d81b48c03ed6034440936) |
 | 아키텍처 | [인프라](architecture/infrastructure.md) | APPROVED | Infra | 2026-08-27 | [인프라 구성 설계](https://app.notion.com/p/3c0eeed6b62d81269f60e1c69fbf9fcc) |
 | 아키텍처 | [TestRun Persistence 구현 인덱스](architecture/testrun-persistence.md) | APPROVED | Backend | 2026-09-04 | 없음 |
@@ -43,7 +43,7 @@
 | 계약 라우팅 | [비동기 TestRun 계약 맵](contracts/README.md) | APPROVED | Backend | 2026-08-31 | 없음 |
 | 통합 | [SageMaker Response Behavior Classifier Adapter](integrations/sagemaker-classifier-adapter.md) | APPROVED | Backend | 2026-09-04 | 없음 |
 | 통합 | [HTTP Endpoint Application Target Adapter](integrations/http-endpoint-target.md) | APPROVED | Backend | 2026-09-01 | 없음 |
-| 결정 | [ADR 안내](decisions/README.md) | APPROVED | Team | 2026-09-04 | 없음 |
+| 결정 | [ADR 안내](decisions/README.md) | APPROVED | Team | 2026-11-21 | 없음 |
 | 성능 실험 | [ADR 0016: 실행 계획](decisions/0016-performance-experiment-plan.md) | APPROVED | Backend | 2026-11-21 | GitHub Issue #20 |
 | 결정 | [ADR 0001: 도메인 타입 소유권과 Aggregate 경계](decisions/0001-domain-type-ownership-and-aggregate-boundaries.md) | APPROVED | Backend | 2026-08-24 | 없음 |
 | 결정 | [ADR 0002: PostgreSQL 영속성 계약과 물리 ERD](decisions/0002-postgresql-persistence-contract.md) | APPROVED | Backend | 2026-09-04 | 없음 |

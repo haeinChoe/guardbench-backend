@@ -25,7 +25,8 @@ from .aws import (
     queue_urls_from_environment,
 )
 from .config import ConfigurationError, load_dataset, load_profile
-from .dataset import load_seed_payload
+from .dataset import seed_payload_from_manifest
+from .plan import load_execution_plan
 from .storage import ResultUploadError, upload_result_directory
 
 
@@ -276,19 +277,41 @@ def _report(result: dict[str, Any]) -> str:
 
 def execute(args: argparse.Namespace) -> int:
     repo_root = _repo_root()
-    profile_path = Path(args.profile).resolve()
-    dataset_path = Path(args.dataset).resolve()
-    profile = load_profile(profile_path)
-    payload, test_case_count = load_seed_payload(dataset_path)
+    execution_plan = None
+    if args.experiment:
+        if args.profile is not None or args.dataset is not None:
+            raise ConfigurationError("--experiment는 --profile/--dataset과 함께 지정할 수 없습니다.")
+        execution_plan = load_execution_plan(Path(args.experiment))
+        if not args.dry_run:
+            raise ConfigurationError("--experiment 실제 실행은 capacity preflight 통합 후 지원합니다. --dry-run을 사용하세요.")
+        profile_path = execution_plan.source_paths["profile"]
+        dataset_path = execution_plan.source_paths["dataset"]
+        profile = execution_plan.profile
+        dataset = execution_plan.dataset
+        payload = execution_plan.seed_payload
+        test_case_count = execution_plan.test_case_count
+    else:
+        profile_path = Path(args.profile or repo_root / "performance/profiles/smoke.yaml").resolve()
+        dataset_path = Path(args.dataset or repo_root / "performance/datasets/baseline-v1.yaml").resolve()
+        profile = load_profile(profile_path)
+        dataset = load_dataset(dataset_path)
+        payload, test_case_count = seed_payload_from_manifest(dataset, dataset_path)
     run_id = f"{profile['test']['id']}-{_now().strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
     result_dir = Path(args.result_dir).resolve() if args.result_dir else repo_root / "performance/results" / run_id
     result_dir.mkdir(parents=True, exist_ok=False)
-    shutil.copyfile(profile_path, result_dir / "profile.yaml")
-    shutil.copyfile(dataset_path, result_dir / "dataset.yaml")
+    if execution_plan:
+        for name, source in execution_plan.source_bytes.items():
+            (result_dir / f"{name}.yaml").write_bytes(source)
+        (result_dir / "execution-plan.json").write_text(
+            json.dumps(execution_plan.to_dict(), indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    else:
+        shutil.copyfile(profile_path, result_dir / "profile.yaml")
+        shutil.copyfile(dataset_path, result_dir / "dataset.yaml")
 
     if args.dry_run:
-        plan = {"run_id": run_id, "profile": str(profile_path), "dataset": str(dataset_path),
-                "test_case_count": test_case_count, "k6_script": str(repo_root / "performance/k6/test-run.js")}
+        plan = execution_plan.to_dict() if execution_plan else {
+            "run_id": run_id, "profile": str(profile_path), "dataset": str(dataset_path),
+            "test_case_count": test_case_count, "k6_script": str(repo_root / "performance/k6/test-run.js")}
         (result_dir / "dry-run.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(plan, indent=2))
         return 0
@@ -345,7 +368,7 @@ def execute(args: argparse.Namespace) -> int:
             "concurrent_test_runs": workload["concurrent_test_runs"],
             "ecs_task_count": infrastructure_capacity["ecs"]["desired_count"],
         },
-        "dataset": {"id": load_dataset(dataset_path).get("id", dataset_path.stem), "test_case_count": test_case_count,
+        "dataset": {"id": dataset["id"], "test_case_count": test_case_count,
                     "suite_id": suite_id},
         "profile": profile,
         "k6": {
@@ -379,10 +402,10 @@ def execute(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = _repo_root()
     command = argparse.ArgumentParser(description="Run a repeatable GuardBench performance profile.")
-    command.add_argument("--profile", default=str(root / "performance/profiles/smoke.yaml"))
-    command.add_argument("--dataset", default=str(root / "performance/datasets/baseline-v1.yaml"))
+    command.add_argument("--experiment", help="Experiment manifest v1 (currently requires --dry-run).")
+    command.add_argument("--profile", help="Workload profile (default: performance/profiles/smoke.yaml).")
+    command.add_argument("--dataset", help="Dataset manifest (default: performance/datasets/baseline-v1.yaml).")
     command.add_argument("--result-dir")
     command.add_argument("--dry-run", action="store_true", help="Validate inputs and print the execution plan.")
     return command
