@@ -1,461 +1,141 @@
-# 성능 테스트 운영
+# 성능 테스트
 
 > Status: APPROVED
 > Owner: Backend
-> Related Issue: #140, #187, #193, #200, #212, #24, #25, #26
+> Related Issue: #140, #187, #193, #200, #212, #24, #25, #26, #37, #39
 
-## 목적과 원칙
+## 목적과 경계
 
-GuardBench 성능 실험은 하나의 인프라 구성을 고정하고 선택한 Profile의 부하를 실행한다.
-동일한 workload를 반복해 Baseline과 인프라 변경 전후를 비교하며, 현재 ECS 설정값 자체를
-성능 목표의 근거로 삼지 않는다. 실행 입력·결과 계약은 [ADR 0016](decisions/0016-performance-experiment-plan.md)을 따른다.
-TestRun은 `POST /api/v1/test-runs`의 `202 Accepted`에서 끝나지 않고 SQS/Worker를 거쳐
-`FINISHED`가 되므로 HTTP latency와 비동기 완료 시간을 분리해서 측정한다.
+GuardBench 성능 Runner는 지정한 GuardBench API와 AI Target endpoint에 대해 재현 가능한
+부하 시나리오와 Dataset을 실행하고 앱 수준 부하 결과를 기록한다.
+Runner와 인프라의 소유권 경계는 [ADR 0017](decisions/0017-performance-runner-infrastructure-boundary.md),
+테스트 유형·단계형 workload·실패 진단 계약은 [ADR 0016](decisions/0016-performance-experiment-plan.md)을 따른다.
 
-현재 E2E 실행 경로는 다음과 같다.
+| Backend 소유 | IaC 소유 |
+| --- | --- |
+| 테스트할 앱 버전 | 인프라 구성과 성능 환경의 생성·삭제 |
+| 시나리오: 테스트 유형(`SMOKE`/`STRESS`/`SOAK`), workload, 앱 수준 acceptance | Runner 실행 기반(CodeBuild)과 단일 실행 진입점 |
+| 데이터셋 (`performance/datasets/`) | 실행 전 capacity·queue 확인 |
+| k6 스크립트와 k6 버전 (`performance/k6/VERSION`) | 인프라 지표·로그 수집과 인프라 수준 acceptance |
+| Runner와 앱 수준 부하 결과 | 결과 보존, Runner 결과와 인프라 snapshot의 결합 `(W,C,T)` |
+
+TestRun은 `POST /api/v1/test-runs`의 `202 Accepted`에서 끝나지 않고 비동기 Worker를 거쳐
+`FINISHED`가 되므로, k6는 HTTP 생성 latency/오류율과 비동기 TestRun 완료 시간·실패율을 분리 측정한다.
 
 ```text
-TestRun → controlled Application Target (Demo AI)
-        → SageMaker Response Behavior Classifier
+TestRun → controlled Application Target
+        → Response Behavior Classifier
         → ALLOW/BLOCK 정규화 → Assertion → Metrics / Quality Gate
 ```
 
-여기서 Demo AI는 GuardBench 자체의 성능 테스트 대상(SUT)이 아니다. 실제 고객의
-OpenAI-compatible Application Target을 대신하는 고정된 synthetic target이며, 외부 고객
-서비스의 latency/throughput 변동이 GuardBench 성능 측정에 섞이지 않도록 통제하는 fixture다.
-따라서 Demo AI 자체의 최대 throughput, CPU saturation, scaling 특성을 측정하지 않으며,
-`demo_ai_cpu`, `demo_ai_memory`, `demo_ai_desired_count`를 MVP capacity sweep 축으로 사용하지
-않는다. Demo AI의 application code에 artificial delay/throttling을 추가하거나 latency를
-임의로 하드코딩하지 않는다.
+비교 가능한 실험에서는 고정된 synthetic Application Target 특성을 유지하며, target의 latency 변동이나
+artificial throttling이 GuardBench 앱 측정에 섞이지 않도록 통제한다.
 
-비교 가능한 실험에서는 Demo AI image/revision, model/config, ECS CPU/memory, desired count,
-Application Target endpoint와 가능한 한 동일한 latency 특성을 고정한다. 이 조건이 변경된
-실행은 GuardBench capacity 변경 전후의 동일 조건 실험으로 간주하지 않는다. Profile의
-Application Target은 workload가 호출할 target을 지정할 뿐이며, target의 capacity를
-GuardBench 성능 실험 축으로 소유하지 않는다.
+## Dataset과 시나리오
 
-성능 Profile은 Application Target과 workload/acceptance criteria만 입력으로 소유한다.
-`evaluationProfile`, `checks`, `strictness` 같은 evaluator 설정은 TestRun 생성 계약이 아니며,
-classifier endpoint/prompt 등은 Backend 배포 설정이 소유한다.
-
-실험 순서는 다음과 같다.
-
-```text
-인프라 구성 선택 → Performance Profile → 동일 Dataset 실행 → Baseline
-→ 병목 분석 → 인프라 변경 → 동일 workload 재검증
-```
-
-현재 단일 ECS Service는 최초 Baseline 측정 대상일 뿐 성능 목표의 근거가 아니다. API/Worker
-분리, Worker Auto Scaling, Fargate 자원 조정 이후에도 같은 Dataset과 Profile을 사용한다.
-
-## Infrastructure Capacity 입력과 환경 분리
-
-ECS task CPU/memory는 Profile이나 Workload가 아니라 Terraform/배포 설정이 소유하는
-Infrastructure Capacity 입력이다. IaC의 Performance Backend는 dev와 분리된 CPU/memory 입력
-(예: `performance_api_cpu`, `performance_api_memory`)을 사용하고, dev Backend는 `api_cpu`와
-`api_memory`를 계속 사용한다.
-따라서 Performance task size를 변경해도 dev Task Definition이나 Service가 변경 대상이
-되지 않아야 한다. 실제 변수와 Task Definition 연결은 [guardbench-iac Issue #41](https://github.com/GuardBench/guardbench-iac/issues/41)의
-계약을 따른다.
-
-MVP에서 Capacity 실험으로 변경하는 대상은 Performance Backend ECS와 SageMaker classifier다.
-RDS와 SQS는 Performance 전용 실행을 지지하는 고정·관찰 대상이며, capacity tuning 축으로
-취급하지 않는다.
-
-| 구분 | 대상 | MVP 성능 테스트에서의 역할 |
-| --- | --- | --- |
-| 주요 Capacity 실험 대상 | Performance Backend ECS | task CPU/memory 등 configured capacity를 변경·비교 |
-| 주요 Capacity 실험 대상 | SageMaker classifier | classifier의 configured capacity를 변경·비교 |
-| 고정·관찰 대상 | Performance 전용 RDS | 실행 기간 동안 고정하고 병목 여부를 관찰 |
-| 고정·관찰 대상 | SQS | queue 구성을 고정하고 backlog/drain을 관찰 |
-| 외부 통제 변수 | Demo AI | 고정된 synthetic Application Target으로 사용; 자체 capacity는 측정·tuning하지 않음 |
-
-RDS instance class 단계 변경, RDS sizing 비교, storage/IOPS/connection pool 튜닝은 MVP 범위에
-포함하지 않는다. RDS는 configured capacity snapshot과 observed metrics를 통해 실행 조건의
-재현성과 병목 분석을 지원한다.
-
-주요 Capacity 실험은 다음 축을 바꾸는 작업이다.
-
-```text
-동일 Dataset + 동일 Profile/Workload + ECS/SageMaker Capacity 변경
-```
-
-실행 대상 자원은 experiment manifest(ADR 0016)의 `infrastructure.expected`가 가리킨다.
-Runner는 실행 직전에 Worker와 선택적 API Service가 사용하는 active Task Definition과 Service
-상태를 AWS에서 읽어 `result.json.infrastructure_capacity.ecs.worker`·`ecs.api`에 다음 값을 저장한다.
-
-| IaC 입력 또는 상태 | snapshot artifact (`ecs.<role>.`) |
-| --- | --- |
-| Performance 전용 CPU 입력이 반영된 Task Definition | `task_cpu` |
-| Performance 전용 memory 입력이 반영된 Task Definition | `task_memory` |
-| Performance Service의 configured desired count | `desired_count` |
-| snapshot 시점의 실제 running/pending task 수 | `running_task_count`, `pending_task_count` |
-| Service와 PRIMARY deployment의 task definition·rollout 상태 | `task_definition_arn`, `deployments` |
-
-대조 규칙은 [Manifest capacity preflight](performance-capacity-preflight.md)를 따른다.
-
-Snapshot은 Terraform 입력값 자체가 아니라 AWS에 적용된 실제 구성값을 기록한다. 그러므로
-Terraform apply와 Performance Service rollout이 끝난 뒤 실행해야 하며, snapshot의 CPU/memory가
-변경한 입력과 다르면 실행 조건을 재현할 수 없는 것으로 보고 실행을 중단하거나 결과를 비교하지
-않는다. dev capacity는 dev 대상의 별도 실행에서만 기록하며 Performance Profile/Workload
-schema에는 CPU, memory, capacity level 또는 ECS 식별자를 추가하지 않는다.
-
-## Dataset과 Profile
-
-Dataset은 무엇을 실행할지, Profile은 얼마나 실행할지를 소유한다.
+Dataset은 무엇을 실행할지, 시나리오는 어떤 부하 패턴과 앱 수준 기준으로 평가할지를 소유한다.
 
 | 구분 | 책임 | 예시 |
 | --- | --- | --- |
-| Dataset | TestSuite/TestCase 내용과 재현 가능한 TestCase 수 | `baseline-v1`, 78 TestCases |
-| Profile | 동시 TestRun 수, ramp-up/duration 또는 stages, test type, acceptance criteria | `FIXTURE-SMOKE`, `SMOKE` |
+| Dataset | TestSuite/TestCase 내용과 고정된 TestCase 수 | `baseline-v1` (78건), `large-suite-491-v1` (491건) |
+| 시나리오 | 테스트 유형, workload 곡선, target 유형, 앱 수준 acceptance | `FIXTURE-SMOKE` (`SMOKE`), `FIXTURE-STAGED-STRESS` (`STRESS`) |
 
-`performance/datasets/baseline-v1.yaml`은 기존 데모용 78건 import fixture를 immutable
-source로 고정한다. 별도 대규모 실행용 `performance/datasets/large-suite-491-v1.yaml`(491 TestCases, immutable) 파일도 함께 관리한다. 이 Dataset은 classifier 정확도 benchmark가 아니라 반복 가능한 performance
-workload다. 기준으로 사용한 Dataset은 조용히 수정하지 않는다. TestCase를 추가하거나
-생성 규칙을 바꾸려면 `baseline-v2` 또는 `perf-medium-v1`처럼 새 버전을 만들고 metadata에
-생성 방법을 남긴다. `500 TestCases`는 Dataset 크기이며 측정 대상 인프라 구성 수준과 별개의 축이다.
-
-사용할 테스트 유형과 목적은 ADR 0016에 따라 다음과 같다.
-
-- `SMOKE`: 적은 부하로 TestRun 접수·비동기 처리·완료·결과 수집 경로 확인
-- `STRESS`: 부하 증가에 따른 처리 한계, 지연, SQS backlog와 실패 양상 확인
-- `SOAK`: 일정한 부하를 장시간 유지하며 메모리·연결·backlog·오류 누적 확인
-
-현재 실제 운영 프로필 파일은 없고 검증 fixture만 `performance/fixtures/profiles/`에 있다.
-Runner는 이 세 유형만 허용하고 다른 `test.type`은 설정 오류로 거부한다. 허용 유형이 있다는 사실이
-해당 프로필의 구현 완료를 뜻하지 않는다. 유형별 부하 수치·시간·판정 기준과 프로필 구현은 #23 범위다.
-
-## 책임 경계
-
-```text
-Python Runner: profile/dataset 검증 · preflight · seed · k6 orchestration
-                                      · async drain · AWS metric · report/판정
-k6: POST latency/error · TestRun 상태 polling · completion duration/failure metric
-AWS collector: ECS/SQS/RDS/SageMaker CloudWatch 시계열
-```
-
-k6가 종료됐다는 사실만으로 테스트를 종료하지 않는다. Runner는 생성 구간의 TestRun이
-`QUEUED/PREPARING/RUNNING`에 남아 있지 않고 source queue가 drain될 때까지 기다린다.
-polling은 초기 Smoke Profile의 측정 경계이며, 대규모 Profile에서 traffic 왜곡이 확인되면
-completion collector를 별도 구현으로 교체한다.
+- `performance/datasets/baseline-v1.yaml`(78건, `http-testset` SHA-256 고정)과
+  `performance/datasets/large-suite-491-v1.yaml`(491건, `synthetic-testset`)을 immutable Dataset으로 관리한다.
+- 시나리오 스키마:
+  - `test`: `id`, `name`, `type`(`SMOKE` | `STRESS` | `SOAK`).
+  - `workload`: `concurrent_test_runs`, `completion_timeout_seconds`, `polling_interval_seconds`,
+    선택 `max_iterations_per_vu`, 그리고 `ramp_up_seconds`/`duration_seconds` 또는 단계형 `stages`.
+  - `target`: `type: HTTP_ENDPOINT`만 선언한다. 환경별 URL·model·revision은 CLI 인자로만 받는다.
+  - `acceptance`: `api.create_latency_ms`(`p50`/`p95`/`p99`), `api.error_rate`,
+    `completion.max_seconds`, `completion.failure_rate`. 인프라 수준 기준은 시나리오에 두지 않으며
+    알 수 없는 키는 `ConfigurationError`로 거절한다.
 
 ## 설치와 실행
 
-필수 도구는 Python 3.11 이상, k6, 실행 대상 GuardBench API, 그리고 배포 환경에서는 AWS
-SQS/CloudWatch를 조회할 자격 증명이다.
+필수 도구는 Python 3.11 이상과 [performance/k6/VERSION](../performance/k6/VERSION)에 선언된 버전(`0.55.0`)의 `k6`다.
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r performance/requirements.txt
-
-export APP_REVISION=<runner-source-commit-sha>
-export INFRA_REVISION=<infrastructure-commit-sha>
-export PERF_BASE_URL=https://<guardbench-api>
-export PERF_TARGET_URL=https://<openai-compatible-target>/v1/chat/completions
-export PERF_TARGET_MODEL=<model>
-export PERF_TARGET_REVISION=<application-revision>
-export PERF_SOURCE_QUEUE_URLS=<resolve-url>,<work-items-url>,<finalize-url>
-export PERF_DLQ_URLS=<resolve-dlq-url>,<work-items-dlq-url>,<finalize-dlq-url>
-export AWS_REGION=ap-northeast-2
-# ECS/RDS/SageMaker 식별자와 기대 capacity는 환경변수가 아니라 experiment manifest가 소유한다.
-# CloudWatch SQS QueueName dimensions (source + DLQ)
-export PERF_SOURCE_QUEUE_RESOLVE_NAME=<resolve-queue-name>
-export PERF_SOURCE_QUEUE_WORK_ITEMS_NAME=<work-items-queue-name>
-export PERF_SOURCE_QUEUE_FINALIZE_NAME=<finalize-queue-name>
-export PERF_DLQ_RESOLVE_NAME=<resolve-dlq-name>
-export PERF_DLQ_WORK_ITEMS_NAME=<work-items-dlq-name>
-export PERF_DLQ_FINALIZE_NAME=<finalize-dlq-name>
-
-# 입력과 실행 계획만 검증한다. API, AWS, DB를 호출하지 않는다.
-python3 -m performance.runner.cli --experiment <experiment.yaml> --dry-run
-
-# 실제 비교 실행: preflight (manifest capacity 대조 포함) → Dataset seed → k6 → drain → metrics → report
-python3 -m performance.runner.cli --experiment <experiment.yaml>
 ```
 
-Performance API가 internal ALB 뒤에 있으면 Worker 설정의
-`guardbench.http-endpoint.allowed-private-hostnames`에 ALB의 전체 hostname을 정확히
-등록한다. `allow-private-addresses=true`를 사용하지 않으며, wildcard나 private IP를
-allowlist에 등록하지 않는다. 예를 들어 배포 환경 설정은 다음과 같다.
+Runner CLI 입력:
 
-```yaml
-guardbench:
-  http-endpoint:
-    allow-private-addresses: false
-    allowed-private-hostnames:
-      - internal-performance-api-123.ap-northeast-2.elb.amazonaws.com
-```
-
-실행 결과는 `performance/results/<run-id>/`에 원본 입력 `experiment.yaml`, `profile.yaml`,
-`dataset.yaml`과 `execution-plan.json`, `k6-summary.json`, `aws-metrics.json`, `result.json`,
-`report.md`로 저장한다. dry-run은 원본 입력 세 개와 `execution-plan.json`만 남긴다.
-
-`result.json`은 `schema_version: 2`를 유지하며 `execution_plan`(해석된 `experiment.id`,
-`infrastructure.id`·`revision`·`expected`, `profile`, `dataset`, `sources`의 `path` 및 원본 byte
-SHA-256)과 `scenario`(`id`, `type`)를 포함한다. `result.json.infrastructure_capacity`는 실행 전
-AWS API에서 읽은 configured capacity snapshot이며, `revisions`와 capture 시각을 함께 보존한다.
-`aws-metrics.json`은 실행 중 관측한 utilization, latency, queue 등의 시계열을 별도로 보존한다.
-
-`report.md`는 `performance/runner/results.py`가 생성하며 실험 ID, 인프라 구성 ID/정의
-revision(배포 `INFRA_REVISION` 및 `APP_REVISION`과 별도 표기), 시나리오 ID/유형, Dataset ID와
-TestCase 수, `(W,C,T)` 튜플과 `C` 의미(최대 configured VU target; VU 하나가 TestRun 하나 완료를
-기다림), 해석된 workload(`stages`가 있으면 전체 단계 포함), acceptance 기준, manifest 선택값
-(`expected`)과 실행 전 관측 snapshot(`infrastructure_capacity`)을 별도 절로 구분하고, 입력 출처
-(`sources`의 `path`·`sha256`)를 함께 남긴다. 수집되지 않은 metric은 임의의 정상 수치로 채우지 않고
-누락 상태를 그대로 표시한다.
-
-Runner는 실행 전에 manifest의 `infrastructure.expected.ecs.worker.work_items_concurrency`를 Worker
-active Task Definition의 `GUARDBENCH_WORKER_WORK_ITEMS_CONCURRENCY`와 비교하고, `desired_count`를
-Service의 `desiredCount`·`runningCount`와 비교한다. RDS/SageMaker와 선택적 API도 같은 방식으로
-대조한다. 하나라도 다르면 Dataset seed와 k6 실행을 시작하지 않고 expected/actual 차이를 담은
-preflight 오류로 종료한다.
-
-실제 WorkItem concurrency는 `result.json.infrastructure_capacity.ecs.worker.work_items_concurrency`에
-기록한다. `result.json.experiment`는 기존과 같이
-`(work_items_concurrency, concurrent_test_runs, ecs_task_count)` 튜플 객체로 유지하며,
-여기서 `ecs_task_count`는 preflight를 통과한 Worker의 configured `desiredCount`이고
-`concurrent_test_runs`는 최대 configured VU target이다. manifest 실험 ID는
-`result.json.execution_plan.experiment.id`에 둔다.
-
-## Spot Runner image와 결과 보존
-
-Performance Runner는 private Spot host의 container runtime에서 직접 실행하는 Docker image다.
-Image에는 Python dependency, k6와 canonical HTTP fixture를 함께 포함하므로 host의 실행 도구나 실행 중 Git clone/package
-download에 의존하지 않는다.
-
-Image repository와 URI는 배포 환경이 결정해 외부 입력으로 전달한다. Backend Git SHA는 image의
-`APP_REVISION` 환경변수와 OCI revision label에 기록한다.
+| 옵션 | 필수 여부 | 설명 |
+| --- | --- | --- |
+| `--api-url` | 필수 | 부하를 보낼 GuardBench API base URL |
+| `--target-url` | 필수 | TestRun이 평가할 AI Target endpoint URL |
+| `--target-model` | 필수 | 평가할 Target의 model 식별자 |
+| `--target-revision` | 선택 | 배포된 Target의 revision |
+| `--scenario <yaml>` | 필수 | 시나리오 YAML 경로 |
+| `--dataset <yaml>` | 필수 | Dataset YAML 경로 |
+| `--result-dir <dir>` | 선택 | 산출물을 기록할 로컬 디렉터리 |
+| `--dry-run` | 선택 | 입력 검증과 해석된 실행 계획 출력(외부 호출 없음) |
 
 ```bash
-repository=<account>.dkr.ecr.<region>.amazonaws.com/<repository>
-performance/build-runner-image.sh "$repository"
+# 입력 검증과 실행 계획만 생성 (외부 API/k6 호출 없음)
+python3 -m performance.runner.cli \
+  --api-url https://<guardbench-api> \
+  --target-url https://<openai-compatible-target>/v1/chat/completions \
+  --target-model <model> \
+  --target-revision <revision> \
+  --scenario <scenario.yaml> \
+  --dataset <dataset.yaml> \
+  --result-dir <dir> \
+  --dry-run
 
-# Build script가 출력한 현재 Git SHA tag의 image reference를 ECR login 후 publish한다.
-bin/publish-runner-image \
-  "$repository:$(git rev-parse HEAD)"
+# 실제 실행: preflight(API health 및 진행 중 TestRun 없음 확인) → seed → k6 → report
+python3 -m performance.runner.cli \
+  --api-url https://<guardbench-api> \
+  --target-url https://<openai-compatible-target>/v1/chat/completions \
+  --target-model <model> \
+  --target-revision <revision> \
+  --scenario <scenario.yaml> \
+  --dataset <dataset.yaml> \
+  --result-dir <dir>
 ```
 
-Build script는 호출자가 전달한 repository URI에 현재 Backend Git SHA를 단 하나의 tag로 붙인다.
-따라서 image tag, `APP_REVISION`, OCI revision label은 항상 같은 revision을 가리키며, 호출자가
-서로 다른 tag/revision 조합을 지정할 수 없다.
+Internal ALB 뒤에 있는 대상 API/Target을 호출하는 환경에서는 Worker 설정의
+`guardbench.http-endpoint.allowed-private-hostnames`에 전체 hostname을 정확히 등록하고
+`allow-private-addresses: false`를 유지한다.
 
-Container 시작점은 `python3.11 -m performance.runner.cli`이며 필수 `--experiment`와 선택
-`--dry-run`, `--result-dir` 옵션을 받는다. `/workspace/bin/verify-runtime`은 container
-내부의 Python, k6, Dataset, canonical fixture와 `performance.runner` import를 확인하고
-검증 fixture manifest의 dry-run을 실행한다. 하나라도 실패하면 non-zero로 종료한다.
-
-실제 Runner는 `PERFORMANCE_RESULTS_BUCKET`이 설정된 경우, 결과 파일을 모두 만든 뒤 다음
-prefix에 업로드한다. 따라서 PASS와 acceptance FAIL(k6 exit 99 포함)은 모두 보존된다. S3 upload
-실패는 정상 성능 판정과 구분되는 Runner 오류이며, 로컬 결과는 남긴다. 환경변수가 없는 로컬
-실행은 기존처럼 결과를 로컬에만 보존한다.
-
-```text
-s3://<PERFORMANCE_RESULTS_BUCKET>/performance/results/<run-id>/
-```
-
-### 실행 오류 진단 및 부분 결과 보존 (#25)
-
-[ADR 0016](decisions/0016-performance-experiment-plan.md)은 APPROVED/ACCEPTED 계약이며,
-실패 진단과 완료·부분 artifact의 분리, `schema_version: 2`, 완료 표식 경계를 정의한다.
-이 절은 #25의 구현 동작을 설명한다. `experiment.yaml`, `execution-plan.json`과 `result.json`의
-`execution_plan`·`scenario` 식별 metadata는 모든 실행에서 생성·보존하는 필수 요소다.
-
-Runner는 성능 기준 미달(`FAIL`)과 실행 도구 오류(`ERROR`)를 구분한다.
+## 산출물과 판정
 
 - **종료 코드**:
-  - `0`: acceptance `PASS` 또는 `--dry-run` 완료
+  - `0`: 앱 수준 acceptance `PASS` 또는 `--dry-run` 완료
   - `1`: 측정이 완료된 정상 실행 결과의 acceptance `FAIL` (k6 threshold breach `exit 99` 포함)
-  - `2`: Runner 실행 오류 (`ConfigurationError`, `RunnerError`, `ApiError` 및 예기치 않은 실행 예외)
-- **`result.json` `schema_version: 2` 및 `upload-complete.json` 완료 표식**:
-  - 새로 생성하는 `result.json`은 `schema_version: 2`와 기존 필드를 유지하면서 `execution_plan`, `scenario` 식별 정보를 포함한다.
-  - 완료 결과 업로드(`upload_result_directory`)는 8개 canonical 파일(실행 입력 `experiment.yaml`, `profile.yaml`, `dataset.yaml`, `execution-plan.json`과 `k6-summary.json`, `aws-metrics.json`, `result.json`, `report.md`)이 모두 존재하고 `failure.json`이 없을 때만 `s3://<PERFORMANCE_RESULTS_BUCKET>/performance/results/<run-id>/`에 기존 PutObject/upload 호출만으로 업로드한다(추가 S3 읽기/복사 IAM 권한 불필요). 모든 실행이 manifest로 시작하므로 실행 입력 파일도 선택이 아닌 필수다.
-  - 실제 업로드된 파일 목록이 모두 성공한 뒤에만 완료 표식 `upload-complete.json`(`schema_version: 1`, `status: "COMPLETE"`, `run_id`, `completed_at`, `files`, `file_sha256`, optional `result_schema_version`)을 **마지막**으로 게시한다. 중간 업로드가 실패하면 표식은 게시되지 않으며, 측정 이후 `upload` 단계 실패 시 로컬 `result.json`(PASS/FAIL)과 `report.md`는 그대로 보존하고 로컬 `failure.json` (`phase: "upload"`)을 남긴다(실패 prefix 재업로드는 시도하지 않음).
-- **`failure.json` (`schema_version: 1`) 및 조기 설정 오류 보존**:
-  - experiment manifest와 참조 Profile/Dataset 검증을 시작하기 전에 fallback `run_id`와 최소 실행 컨텍스트를 먼저 할당하므로 없는 manifest, 잘못된 YAML, 해석되지 않은 환경변수 등 조기 설정 오류도 `failure.json`으로 보존한다(`--dry-run` 검증 실패는 제외). 실행 계획을 해석하기 전 실패하면 원본 `experiment.yaml`이 있을 때 함께 보존한다.
-  - 이미 존재하는 `--result-dir`는 절대 덮어쓰지 않으며, 디렉터리 생성·파일 기록·S3 실패 업로드가 추가로 실패해도 원래 예외를 그대로 전파하고 `stderr`에 원래 오류와 보존 오류를 모두 출력한다(디스크 기록이 가능한 경우에는 `preservation_errors`에도 함께 기록).
-  - 기록 항목은 `schema_version`, `run_id`, `status`(`"ERROR"`), `phase`(`preflight|seed|k6|drain|metrics|report|upload`), `started_at`, `failed_at`, `error`(`type`, `message`, optional `cause`), `inputs`(확인된 non-secret 입력: `experiment_path`, 해석된 실행 계획의 `experiment_id`·`infrastructure_id`·`infrastructure_revision`·Profile/Dataset 식별자와 경로, seed 이후 `suite_id`), `revisions`(확인된 `application`/`infrastructure`, 미설정/`unknown` 제외), `available_artifacts`, `preservation_errors`다.
-  - 예외 메시지의 URL userinfo, Bearer token, secret/key/password 패턴은 마스킹하며 비밀 환경변수는 저장하지 않는다. 미생성 `k6-summary.json`, `aws-metrics.json`, `result.json`, `report.md`는 임의로 채우지 않는다.
-- **실패 결과 별도 S3 prefix**:
-  - 실패·부분 결과 업로드(`upload_failure_directory`)는 `PERFORMANCE_RESULTS_BUCKET`이 설정된 경우 `failure.json`과 실제로 존재하는 부분 파일(실행 입력 `experiment.yaml`, `execution-plan.json` 포함)만 아래 별도 prefix에 업로드한다(`upload-complete.json`은 제외).
+  - `2`: Runner 실행 오류 (`ConfigurationError`, `RunnerError`, `ApiError` 및 예기치 않은 예외)
+- **`--dry-run` 산출물**: `--result-dir`에 `scenario.yaml`, `dataset.yaml`, `execution-plan.json`을 생성한다.
+- **완료 실행 산출물**: `scenario.yaml`, `dataset.yaml`, `execution-plan.json`, `k6-summary.json`,
+  `result.json`(`schema_version: 2`), `report.md` 6개 파일을 생성한다.
+- **`result.json`과 `report.md`**:
+  - 시나리오 ID·유형(`scenario`), Dataset(`id`, `test_case_count`, `suite_id`), 입력 파일 경로와 원본 byte
+    SHA-256(`execution_plan.sources`), 해석된 연결 정보(`connection`), 해석된 `workload`(단계형 `stages` 포함),
+    `(C, T)` 튜플(`tuple`: `concurrent_test_runs`, `test_case_count`)과 `C` 의미, k6 진단 요약, 앱 수준 판정(`acceptance`)을 기록한다.
+  - `C`는 관측된 동시 사용자 수가 아니라 **최대 configured VU target**이며 한 VU가 TestRun 하나 완료를 기다린다.
+    실험 튜플 `(W, C, T)`의 `W`와 인프라 수준 판정·최종 결합은 IaC가 소유한다.
+  - 수집되지 않은 metric은 정상 수치로 채우지 않고 `null`로 남긴다.
 
-```text
-s3://<PERFORMANCE_RESULTS_BUCKET>/performance/failures/<run-id>/
-```
+## 실패 진단과 부분 결과 보존
 
-- **분석 workflow(`performance-analysis-bundle.yml`)**:
-  - `performance/results/<run-id>/`에 `failure.json`이 존재하거나 canonical 파일이 누락되면 CloudWatch Logs 번들링을 진행하지 않고 실패로 종료한다.
-  - 모든 결과에 대해 `result.json`의 `schema_version >= 2`, 필수 실험 식별 필드(`.execution_plan.experiment.id`, `.execution_plan.infrastructure.id`/`.revision`, `.scenario.id`/`.type`), `upload-complete.json` 완료 표식(`status: "COMPLETE"`, `run_id` 일치, 8개 canonical 파일의 `files[]` 선언과 존재), 그리고 선언된 모든 파일의 `file_sha256` 일치를 검증한다. `file_sha256`가 없는 표식도 거부한다.
-  - `result.json`의 `schema_version`이 없거나 2 미만이면 번들링하지 않고 실패로 종료한다.
-  - 번들링에 성공하면 Step Summary와 `bundle/bundle-metadata.json`에 `experiment_id`, `infrastructure_id`, `infrastructure_revision`, `scenario_id`, `scenario_type`을 함께 기록한다.
-  - 불완전하거나 실패한 실행에서는 `performance/failures/<run-id>/failure.json` 존재 여부를 확인해 실패 `phase`, `error.type`과 진단 경로를 안내한다.
+- 실행 중 오류가 발생하면(`--dry-run` 제외) `failure.json`(`schema_version: 1`, `status: "ERROR"`,
+  `phase`: `preflight|seed|k6|report`, `started_at`, `failed_at`, `error`, `inputs`,
+  `available_artifacts`, `preservation_errors`)을 `--result-dir`에 기록한다.
+- 이미 존재하는 `--result-dir`는 덮어쓰지 않으며, 보존이 실패해도 원래 예외를 덮지 않고 `stderr`에 함께 출력한다.
+- URL userinfo, Bearer token, secret/key/password 패턴은 `failure.json`과 `stderr`에서 마스킹한다.
+- 미생성 파일(`k6-summary.json`, `result.json`, `report.md` 등)은 오류가 난 시점에 없으면 생성하지 않는다.
 
-로컬 API에 대한 입력 검증은 `--dry-run`으로 수행할 수 있다. AWS credential 없이 실제
-Runner orchestration과 실제 `k6` 프로세스 연결(정상 완료, capacity 불일치 차단, 중간 오류 보존)을
-검증하려면 [로컬 mock E2E harness](../performance/runner/LOCAL_E2E.md) (`python3 -m performance.runner.local_e2e`)를
-실행한다. 이 harness는 로컬 모의 HTTP API와 fake AWS client를 사용하므로 실제 AWS 인프라·성능
-Baseline 검증을 대신하지 않는다. 실제 비동기 Smoke 실행은
-SQS와 Worker가 동작하는 로컬 또는 dev 배포가 필요하다. 로컬 SQS 에뮬레이터(Floci 등)를 사용할 때는
-`PERF_SOURCE_QUEUE_URLS`와 `PERF_DLQ_URLS`에 에뮬레이터 URL을 지정하고
-`PERF_SQS_ENDPOINT_URL`을 추가한다. AWS metric이 없는 로컬 실행은 성능 판정용 Baseline으로
-취급하지 않는다.
+## 로컬 Mock E2E 검증
 
-## 테스트 전 상태와 seed
-
-Runner는 실행 전 다음을 확인하고 하나라도 실패하면 k6를 시작하지 않는다.
-
-1. `GET /api/v1/test-suites?page=1&size=1`이 200인지 확인
-2. 처리 중인 이전 TestRun이 없는지 확인
-3. Source Queue의 visible/in-flight/delayed 메시지가 없는지 확인
-4. DLQ에 메시지가 없는지 확인
-
-Preflight가 통과하면 Runner는 seed/k6 전에 ECS service와 task definition, RDS instance,
-SageMaker endpoint의 실제 configured capacity를 조회한다. 이 조회에 필요한 resource
-identifier가 없거나 AWS 응답이 불완전하거나 조회가 실패하면 `unknown`으로 성공 처리하지
-않고 Runner를 중단한다. 따라서 저장된 snapshot은 다음 값을 포함한다.
-
-- ECS: cluster/service identifier, desired count, running task count, task CPU/memory (manifest 경로는 `ecs.worker`와 선택적 `ecs.api`로 구분)
-- RDS: DB instance identifier/class
-- SageMaker: endpoint/production variant, instance type, desired/current instance count
-
-`running task count`는 snapshot 시점의 ECS service 응답값이며, 실행 구간의 관측 시계열과
-혼동하지 않는다. RDS instance identifier/class는 RDS를 조절하기 위한 입력이 아니라
-Performance 전용 격리 DB의 실행 조건을 재현하기 위한 metadata로 계속 기록한다.
-
-Runner는 DB reset이나 migration을 실행하지 않으며 DB 접속 정보도 요구하지 않는다.
-DB lifecycle과 migration은 배포 환경과 Backend application이 소유한다. `--reset` 옵션과
-기존 reset/migration 환경변수는 제거되었으므로 bootstrap 호출에서도 제거해야 한다
-([IaC #50](https://github.com/GuardBench/guardbench-iac/issues/50)).
-
-매 실행마다 선택한 Dataset(기본값 `baseline-v1`)으로 신규 TestSuite를 만들고 seed 결과의 실제 `testSuiteId`를 k6에
-전달한다. 결과 진단은 현재 Suite와 실행 시간 범위로 제한한다. RDS는 capacity와 metric
-관측 대상으로 유지한다. 실제 실행에는 `APP_REVISION`, `INFRA_REVISION`, `PERF_BASE_URL`과
-SQS CloudWatch QueueName 설정이 필요하다.
-
-## Metric과 판정
-
-k6 threshold는 실행 전에 Profile에서 읽는다.
-
-- TestRun 생성 API latency: p50, p95, p99
-- TestRun 생성 HTTP error rate
-- TestRun async completion duration과 terminal failure rate
-
-Runner assertion은 k6 종료 후에도 평가한다.
-
-- 생성된 Run이 모두 terminal `FINISHED`인지
-- source queue가 drain됐는지와 drain 시간
-- DLQ visible message 수
-
-CloudWatch는 실행 시작~완료 구간으로 다음 시계열을 수집한다.
-
-주요 Capacity 실험 대상의 관측 지표:
-
-- ECS: `CPUUtilization`, `MemoryUtilization`, `RunningTaskCount`
-- SageMaker classifier: `Invocations`, `ModelLatency`, `OverheadLatency`,
-  `Invocation4XXErrors`, `Invocation5XXErrors`
-
-고정·관찰 대상의 관측 지표:
-
-- SQS: source/DLQ visible messages, source oldest message age
-- RDS: `CPUUtilization`, `DatabaseConnections`
-
-Configured capacity snapshot과 CloudWatch observed metrics는 서로 다른 artifact 영역이다.
-MVP에서 `result.json.infrastructure_capacity`의 ECS/SageMaker 값은 주요 Capacity 비교의
-실행 조건으로 보고, RDS instance identifier/class는 고정된 Performance 전용 DB를 재현하기
-위한 metadata로 본다. `aws-metrics.json`의 ECS/SageMaker utilization·latency와 RDS/SQS
-CPU·connection·backlog 지표는 해당 조건에서의 관찰 결과로 해석한다.
-
-SageMaker metric은 `EndpointName + VariantName` dimension으로 조회한다. 성능 Baseline에서는
-classifier가 실제 E2E 경로의 일부이므로 ECS·SQS·RDS와 함께 SageMaker datapoint도 있어야
-AWS metric 수집 acceptance가 통과한다. Worker ECS/RDS/SageMaker dimension은 capacity 조회와
-동일한 manifest 식별자를 사용하고, SQS QueueName/URL은 환경 입력을 유지한다. dimension이 비어 있는
-metric이 있으면 `validate_configuration`이 seed 전에 실행을 중단한다.
-
-`TestRun create 202`는 E2E 성공과 다르다. k6는 `FINISHED`까지 polling하고
-`executionOutcome=COMPLETED`인지 별도로 확인한다. Classifier provider 실패는 임의 ALLOW/BLOCK으로
-fallback하지 않으며 execution failure로 반영된다. 병목 분석에서는 TestRun completion과
-ECS/SQS/RDS를 SageMaker latency/error 시계열과 함께 확인해 GuardBench 내부 적체와 classifier
-provider 지연을 구분한다.
-
-HTTP threshold나 시스템 assertion을 위반하면 결과는 `FAIL`로 저장된다. Profile 목표값을
-실행 후 바꾸어 결과를 PASS로 만들지 않는다. `report.md`의 metric 시계열과 workload를 함께
-보고 병목 관찰을 기록하며, 결과가 0건이면 `totalPages`를 추정하지 않는다.
-
-k6 threshold breach의 exit code `99`는 실행 오류가 아니라 측정 결과로 처리한다. Runner는
-summary를 읽고 drain·CloudWatch 수집·acceptance 판정까지 마친 뒤 `result.json`과 `report.md`에
-threshold `FAIL` 및 exit code를 남긴다. script 오류나 실행 불가처럼 다른 non-zero exit code는
-Runner 오류로 중단한다.
-
-## Baseline 비교와 비용
-
-Baseline 비교 시 실행 전 preflight를 통과하고 아래 항목을 고정한다.
-
-- 동일 Dataset version과 TestCase 수
-- 동일 Profile과 acceptance criteria
-- 동일한 Demo AI image/revision, model/config, ECS CPU/memory, desired count와 endpoint
-- 가능한 한 동일 Application/Infrastructure revision 기록 방식
-- 테스트 시작 전 active TestRun 없음과 queue/DLQ empty 상태
-
-이전 Suite/TestRun/Execution/Outbox는 DB에 남는다. 실행별 Suite/time window로 결과를
-분리하며, 누적 DB 크기와 index 상태는 완전히 동일한 조건으로 간주하지 않는다.
-
-`concurrent_test_runs`는 configured VU target이며 단계형 부하에서는 stage target의 최댓값이다.
-한 VU는 TestRun을 접수한 뒤 `FINISHED`까지 polling한다. 이 값은 관측된 실제 동시 Run 수를
-보장하지 않으며 전체 부하 곡선과 함께 해석한다. `max_iterations_per_vu: 1`인 Smoke 성격의
-Profile은 VU마다 1건을 완료하고 끝나며, `duration_seconds` 동안 지속적으로 새 Run을 생성하지
-않는다. 반복 부하를 가하는 STRESS/SOAK Profile에서는 이
-필드를 0(제한 없음) 또는 적절한 반복 수로 명시해 생성률과 완료 polling traffic을 함께
-검토한다.
-
-ECS/SageMaker Capacity만 바꾸고 Dataset/Profile, Demo AI 조건, RDS/SQS 구성을 유지해야 CPU, memory,
-queue age, completion time의 변화를 원인 후보로 비교할 수 있다. RDS/SQS 지표는 고정된
-의존 인프라에서 발생한 병목 여부를 확인하는 데 사용한다. 유형별 실제 부하 수치와 판정 기준은
-프로필 구현 #23에서 정의한다. Profile의 configured VU target × Dataset TestCase 수 ×
-retry 가능성을 실행 전에 확인해 SageMaker Runtime 요청량과 AWS 비용을 검토한다.
-
-## Runner 전용 수동 image publish (#213)
-
-`Performance Runner image publish` workflow는 선택한 branch/tag의 source를 테스트하고
-`performance/Dockerfile`로 build한 뒤 Performance Runner 전용 ECR에 publish한다.
-Backend build/deploy, ECS Task Definition 등록, Service update는 포함하지 않는다.
-
-GitHub `performance` environment에 다음 repository variables를 설정한다.
-
-| 변수 | 값/역할 |
-| --- | --- |
-| `AWS_REGION` | Runner ECR region |
-| `AWS_RUNNER_PUBLISH_ROLE_ARN` | GitHub OIDC를 신뢰하는 Runner 전용 ECR publish 역할 |
-| `RUNNER_ECR_REPOSITORY` | Runner ECR repository name (URI 아님), `IMMUTABLE` 필수 |
-
-역할은 `performance` environment의 GitHub OIDC subject를 신뢰해야 한다. 필요한 권한은
-`ecr:GetAuthorizationToken`과 대상 repository의 `DescribeRepositories`, `BatchGetImage`,
-`DescribeImages`, `BatchCheckLayerAvailability`, `InitiateLayerUpload`, `UploadLayerPart`,
-`CompleteLayerUpload`, `PutImage`다. ECS 권한은 필요하지 않다. IAM/repository 생성과
-bootstrap/instance lifecycle은 IaC가 소유한다. 기존 Backend용 `ECR_REPOSITORY`와
-`AWS_DEPLOY_ROLE_ARN`을 fallback으로 사용하지 않는다.
-
-Workflow가 기본 브랜치에 반영된 후 실행한다. `--ref`에는 workflow가 있는 branch/tag를 지정한다.
+실제 배포 API나 외부 인프라 없이 **실제 Python Runner와 실제 `k6` 프로세스**를 로컬 모의 HTTP API로
+연결해 정상 완료(`0`), 측정 FAIL(`1`), 실행 오류 진단 보존(`2`)을 검증할 수 있다.
+자세한 내용은 [LOCAL_E2E.md](../performance/runner/LOCAL_E2E.md)를 참고한다.
 
 ```bash
-gh workflow run performance-runner-publish.yml --ref dev
+python3 -m performance.runner.local_e2e
+python3 -m unittest discover -s performance -p 'test_*.py' -t .
 ```
 
-Checkout한 commit의 전체 SHA를 image tag, OCI revision, `APP_REVISION`으로 사용한다.
-같은 immutable tag가 있으면 재사용하며 덮어쓰지 않는다. 새 image는 publish 전에
-네트워크를 차단한 `verify-runtime` 검증을 거친다. 결과는 Actions summary와
-`performance-runner-image` artifact의 `runner-image.json`에 다음 값으로 남는다.
-
-- `source_commit_sha`: `APP_REVISION` 입력
-- `image_tag`, `image_digest`, `image_uri`
-- `image_digest_uri`: IaC/Runner bootstrap에서 선택할 digest 고정 URI
-
-로컬에서도 AWS ECR publish 권한이 있는 환경에서 같은 경로를 검증할 수 있다.
-
-```bash
-python3 -m unittest discover -s performance/runner -p 'test_*.py' -v
-AWS_REGION=ap-northeast-2 RUNNER_ECR_REPOSITORY=<runner-repository-name> \
-  performance/publish-runner-image.sh
-```
-
-수동 실행의 기본 브랜치 조건은 [GitHub workflow_dispatch 안내](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow),
-digest 조회는 [AWS ECR describe-images](https://docs.aws.amazon.com/cli/latest/reference/ecr/describe-images.html)를 따른다.
+[performance-runner-ci.yml](../.github/workflows/performance-runner-ci.yml)은 `performance/**` 변경 시 CI에서 같은 두 명령을 실행한다.

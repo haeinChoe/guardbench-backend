@@ -1,7 +1,8 @@
-"""Local E2E harness connecting the real Runner and k6 against local test doubles."""
+"""Local mock E2E harness connecting the real Runner and k6 against a local HTTP test double."""
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -13,42 +14,25 @@ import tempfile
 import threading
 import time
 import urllib.parse
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 from . import cli
-from .api import ApiError
-from .config import ConfigurationError
-from .plan import load_execution_plan
-from .storage import FAILURE_FILENAME, RESULT_FILENAMES
+from .failure import FAILURE_FILENAME
+from .results import RESULT_FILENAMES
 
-DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / "fixtures/experiments/smoke.yaml"
+DEFAULT_SCENARIO = Path(__file__).resolve().parents[1] / "fixtures/profiles/smoke.yaml"
+DEFAULT_DATASET = Path(__file__).resolve().parents[1] / "fixtures/datasets/two-cases.yaml"
+MOCK_TARGET_URL = "http://127.0.0.1:18080/v1/chat/completions"
+MOCK_TARGET_MODEL = "fixture-model"
+MOCK_TARGET_REVISION = "fixture-v1"
 _RUN_DETAIL_PATH = re.compile(r"^/api/v1/test-runs/([0-9]+)$")
 _RUN_RESULTS_PATH = re.compile(r"^/api/v1/test-runs/([0-9]+)/results$")
 _PRESERVED_HOST_ENV_KEYS = ("PATH", "HOME", "TMPDIR", "K6_BIN")
-_QUEUE_ENV = {
-    "PERF_SOURCE_QUEUE_URLS": (
-        "https://local.invalid/source-resolve,"
-        "https://local.invalid/source-work-items,"
-        "https://local.invalid/source-finalize"
-    ),
-    "PERF_DLQ_URLS": (
-        "https://local.invalid/dlq-resolve,"
-        "https://local.invalid/dlq-work-items,"
-        "https://local.invalid/dlq-finalize"
-    ),
-    "PERF_SOURCE_QUEUE_RESOLVE_NAME": "local-source-resolve",
-    "PERF_SOURCE_QUEUE_WORK_ITEMS_NAME": "local-source-work-items",
-    "PERF_SOURCE_QUEUE_FINALIZE_NAME": "local-source-finalize",
-    "PERF_DLQ_RESOLVE_NAME": "local-dlq-resolve",
-    "PERF_DLQ_WORK_ITEMS_NAME": "local-dlq-work-items",
-    "PERF_DLQ_FINALIZE_NAME": "local-dlq-finalize",
-}
 
 
 def resolve_k6_binary() -> str | None:
@@ -133,8 +117,9 @@ class _ThreadingApiServer(ThreadingHTTPServer):
 class LocalMockApiServer:
     """In-process mock HTTP API mimicking GuardBench Runner and k6 endpoints."""
 
-    def __init__(self, *, fail_on_drain: bool = False) -> None:
-        self.fail_on_drain = fail_on_drain
+    def __init__(self, *, run_outcome: str = "COMPLETED", fail_on_diagnostics: bool = False) -> None:
+        self.run_outcome = run_outcome
+        self.fail_on_diagnostics = fail_on_diagnostics
         self._lock = threading.Lock()
         self.health_checks = 0
         self.suites_created: list[dict[str, Any]] = []
@@ -193,8 +178,8 @@ class LocalMockApiServer:
                 if path == "/api/v1/test-runs":
                     statuses = set(query.get("status", []))
                     has_created_from = bool(query.get("createdFrom"))
-                    if owner.fail_on_drain and statuses and has_created_from:
-                        self._respond(500, {"error": "simulated drain query failure"})
+                    if owner.fail_on_diagnostics and has_created_from:
+                        self._respond(500, {"error": "simulated run query failure"})
                         return
                     with owner._lock:
                         items = [
@@ -212,7 +197,15 @@ class LocalMockApiServer:
 
                 results_match = _RUN_RESULTS_PATH.fullmatch(path)
                 if results_match:
-                    self._respond(200, {"data": {"items": [], "page": {"hasNext": False}}})
+                    run_id = int(results_match.group(1))
+                    with owner._lock:
+                        target_run = next((r for r in owner.runs_created if r["id"] == run_id), None)
+                        items = (
+                            [{"error": {"stage": "EVALUATOR", "code": "MOCK_EXECUTION_ERROR"}}]
+                            if target_run is not None and target_run["executionOutcome"] not in (None, "COMPLETED")
+                            else []
+                        )
+                    self._respond(200, {"data": {"items": items, "page": {"hasNext": False}}})
                     return
 
                 detail_match = _RUN_DETAIL_PATH.fullmatch(path)
@@ -227,7 +220,7 @@ class LocalMockApiServer:
                         target_run["polls"] += 1
                         if target_run["polls"] >= 2:
                             target_run["status"] = "FINISHED"
-                            target_run["executionOutcome"] = "COMPLETED"
+                            target_run["executionOutcome"] = owner.run_outcome
                         response_data: dict[str, Any] = {
                             "id": target_run["id"],
                             "testSuiteId": target_run["testSuiteId"],
@@ -291,181 +284,43 @@ class LocalMockApiServer:
                 raise RuntimeError("LocalMockApiServer 스레드가 정상 종료되지 않았습니다.")
 
 
-class _FakeEcsClient:
-    def __init__(self, expected_ecs: dict[str, Any], *, capacity_mismatch: bool = False) -> None:
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-        self._services: dict[str, dict[str, Any]] = {}
-        self._definitions: dict[str, dict[str, Any]] = {}
-        for role, config in expected_ecs.items():
-            arn = f"arn:aws:ecs:local:000000000000:task-definition/{role}:1"
-            desired = config["desired_count"] + (1 if capacity_mismatch and role == "worker" else 0)
-            self._services[config["service_identifier"]] = {
-                "clusterArn": f"arn:aws:ecs:local:000000000000:cluster/{config['cluster_identifier']}",
-                "serviceName": config["service_identifier"],
-                "taskDefinition": arn,
-                "status": "ACTIVE",
-                "desiredCount": desired,
-                "runningCount": desired,
-                "pendingCount": 0,
-                "deployments": [{
-                    "status": "PRIMARY",
-                    "rolloutState": "COMPLETED",
-                    "taskDefinition": arn,
-                    "desiredCount": desired,
-                    "runningCount": desired,
-                    "pendingCount": 0,
-                }],
-            }
-            env = (
-                [{
-                    "name": "GUARDBENCH_WORKER_WORK_ITEMS_CONCURRENCY",
-                    "value": str(config["work_items_concurrency"]),
-                }]
-                if role == "worker"
-                else []
-            )
-            self._definitions[arn] = {
-                "taskDefinitionArn": arn,
-                "cpu": config["task_cpu"],
-                "memory": config["task_memory"],
-                "containerDefinitions": [{"environment": env}] if env else [],
-            }
-
-    def describe_services(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("describe_services", kwargs))
-        service_id = kwargs["services"][0]
-        return {"services": [self._services[service_id]]}
-
-    def describe_task_definition(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("describe_task_definition", kwargs))
-        return {"taskDefinition": self._definitions[kwargs["taskDefinition"]]}
-
-
-class _FakeRdsClient:
-    def __init__(self, expected_rds: dict[str, Any]) -> None:
-        self.calls: list[dict[str, Any]] = []
-        self._instance = {
-            "DBInstanceIdentifier": expected_rds["db_instance_identifier"],
-            "DBInstanceClass": expected_rds["db_instance_class"],
-            "DBInstanceStatus": "available",
-        }
-
-    def describe_db_instances(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(kwargs)
-        return {"DBInstances": [self._instance]}
-
-
-class _FakeSageMakerClient:
-    def __init__(self, expected_sm: dict[str, Any]) -> None:
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-        self._expected = expected_sm
-
-    def describe_endpoint(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("describe_endpoint", kwargs))
-        return {
-            "EndpointName": self._expected["endpoint_name"],
-            "EndpointStatus": "InService",
-            "EndpointConfigName": "local-endpoint-config",
-            "ProductionVariants": [{
-                "VariantName": self._expected["production_variant_name"],
-                "DesiredInstanceCount": self._expected["desired_instance_count"],
-                "CurrentInstanceCount": self._expected["desired_instance_count"],
-            }],
-        }
-
-    def describe_endpoint_config(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("describe_endpoint_config", kwargs))
-        return {
-            "ProductionVariants": [{
-                "VariantName": self._expected["production_variant_name"],
-                "InstanceType": self._expected["instance_type"],
-            }],
-        }
-
-
-class _FakeSqsClient:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    def get_queue_attributes(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(kwargs)
-        return {
-            "Attributes": {
-                "ApproximateNumberOfMessages": "0",
-                "ApproximateNumberOfMessagesNotVisible": "0",
-                "ApproximateNumberOfMessagesDelayed": "0",
-            }
-        }
-
-
-class _FakeCloudWatchClient:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    def get_metric_data(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(kwargs)
-        end_time: datetime = kwargs["EndTime"]
-        return {
-            "MetricDataResults": [
-                {
-                    "Id": query["Id"],
-                    "Label": query["Id"],
-                    "Timestamps": [end_time],
-                    "Values": [1.0],
-                    "StatusCode": "Complete",
-                }
-                for query in kwargs["MetricDataQueries"]
-            ]
-        }
-
-
-class _FakeBoto3:
-    """In-memory boto3 client factory blocking any unmocked AWS service calls."""
-
-    def __init__(self, expected: dict[str, Any], *, capacity_mismatch: bool = False) -> None:
-        self.ecs = _FakeEcsClient(expected["ecs"], capacity_mismatch=capacity_mismatch)
-        self.rds = _FakeRdsClient(expected["rds"])
-        self.sagemaker = _FakeSageMakerClient(expected["sagemaker"])
-        self.sqs = _FakeSqsClient()
-        self.cloudwatch = _FakeCloudWatchClient()
-        self.requested_services: list[str] = []
-
-    def client(self, service_name: str, **kwargs: Any) -> Any:
-        self.requested_services.append(service_name)
-        mapping = {
-            "ecs": self.ecs,
-            "rds": self.rds,
-            "sagemaker": self.sagemaker,
-            "sqs": self.sqs,
-            "cloudwatch": self.cloudwatch,
-        }
-        if service_name not in mapping:
-            raise AssertionError(f"local_e2e에서 허용되지 않은 AWS service 호출입니다: {service_name}")
-        return mapping[service_name]
-
-
 @contextmanager
-def _isolated_harness_environment(base_url: str, fake_boto3: _FakeBoto3):
+def _isolated_harness_environment():
     env: dict[str, str] = {}
     for key in _PRESERVED_HOST_ENV_KEYS:
         value = os.environ.get(key)
         if value:
             env[key] = value
     env.update({
-        "APP_REVISION": "local-e2e-app",
-        "INFRA_REVISION": "local-e2e-infra",
-        "PERF_BASE_URL": base_url,
         "K6_NO_USAGE_REPORT": "true",
         "K6_WEB_DASHBOARD": "false",
-        **_QUEUE_ENV,
     })
-    with ExitStack() as stack:
-        stack.enter_context(patch.dict(os.environ, env, clear=True))
-        stack.enter_context(patch("performance.runner.aws._boto3", return_value=fake_boto3))
-        stack.enter_context(
-            patch("boto3.client", side_effect=AssertionError("real boto3.client is forbidden in local_e2e"))
-        )
+    with patch.dict(os.environ, env, clear=True):
         yield
+
+
+def _cli_argv(
+    api_url: str,
+    scenario_path: Path,
+    dataset_path: Path,
+    result_dir: Path,
+) -> list[str]:
+    return [
+        "--api-url",
+        api_url,
+        "--target-url",
+        MOCK_TARGET_URL,
+        "--target-model",
+        MOCK_TARGET_MODEL,
+        "--target-revision",
+        MOCK_TARGET_REVISION,
+        "--scenario",
+        str(scenario_path),
+        "--dataset",
+        str(dataset_path),
+        "--result-dir",
+        str(result_dir),
+    ]
 
 
 @dataclass(frozen=True)
@@ -476,12 +331,13 @@ class ScenarioResult:
     work_dir: Path
 
 
-def _run_normal_completion(manifest_path: Path, expected: dict[str, Any], result_dir: Path) -> str:
-    fake_boto3 = _FakeBoto3(expected)
-    with LocalMockApiServer() as server, _isolated_harness_environment(server.base_url, fake_boto3):
-        args = cli.parser().parse_args(["--experiment", str(manifest_path), "--result-dir", str(result_dir)])
-        code = cli.execute(args)
-        assert code == 0, f"expected exit code 0, got {code}"
+def _run_normal_completion(scenario_path: Path, dataset_path: Path, result_dir: Path) -> str:
+    with LocalMockApiServer() as server, _isolated_harness_environment():
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+        with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
+            code = cli.main(_cli_argv(server.base_url, scenario_path, dataset_path, result_dir))
+        assert code == 0, f"expected exit code 0, got {code}: {stderr_buf.getvalue()}"
 
         for filename in RESULT_FILENAMES:
             artifact = result_dir / filename
@@ -496,13 +352,25 @@ def _run_normal_completion(manifest_path: Path, expected: dict[str, Any], result
         assert result["acceptance"]["status"] == "PASS"
         assert result["k6"]["exit_code"] == 0
         assert result["execution_plan"] == plan
-        assert result["execution_plan"]["experiment"]["id"] == "fixture-smoke"
         assert result["scenario"] == {"id": "FIXTURE-SMOKE", "type": "SMOKE"}
-        assert result["drain"]["passed"] is True
-        assert result["aws_metrics"]["status"] == "COLLECTED"
+        assert result["tuple"] == {"concurrent_test_runs": 2, "test_case_count": 2}
+        assert result["connection"]["target"] == {
+            "type": "HTTP_ENDPOINT",
+            "url": MOCK_TARGET_URL,
+            "model": MOCK_TARGET_MODEL,
+            "revision": MOCK_TARGET_REVISION,
+        }
         assert result["test_run_diagnostics"]["test_run_count"] >= 1
         assert result["test_run_diagnostics"]["failed_test_run_ids"] == []
-        for marker in ("fixture-smoke", "fixture-infra", "fixture-v1", "FIXTURE-SMOKE", "SMOKE", "**PASS**"):
+        for marker in (
+            "FIXTURE-SMOKE",
+            "SMOKE",
+            "fixture-two-cases-v1",
+            MOCK_TARGET_MODEL,
+            MOCK_TARGET_REVISION,
+            "(2, 2)",
+            "**PASS**",
+        ):
             assert marker in report, f"missing {marker} in report.md"
 
         assert len(server.suites_created) == 1
@@ -512,87 +380,96 @@ def _run_normal_completion(manifest_path: Path, expected: dict[str, Any], result
         for created_run in server.runs_created:
             assert created_run["testSuiteId"] == suite_id
             assert str(created_run["idempotencyKey"]).startswith(f"perf-{run_id}-")
+            assert created_run["target"]["identifier"] == MOCK_TARGET_URL
+            assert created_run["target"]["model"] == MOCK_TARGET_MODEL
+            assert created_run["target"]["revision"] == MOCK_TARGET_REVISION
             assert created_run["status"] == "FINISHED"
         assert server.run_polls >= len(server.runs_created)
-        assert {"ecs", "rds", "sagemaker", "sqs", "cloudwatch"}.issubset(set(fake_boto3.requested_services))
 
         return (
-            f"8개 결과 artifact 생성, real k6 요청 {len(server.runs_created)}건 완료, "
-            f"experiment_id={result['execution_plan']['experiment']['id']}, scenario={result['scenario']['id']}"
+            f"6개 결과 artifact 생성, real k6 요청 {len(server.runs_created)}건 완료, "
+            f"scenario={result['scenario']['id']}, exit=0"
         )
 
 
-def _run_capacity_mismatch(manifest_path: Path, expected: dict[str, Any], result_dir: Path) -> str:
-    fake_boto3 = _FakeBoto3(expected, capacity_mismatch=True)
-    with LocalMockApiServer() as server, _isolated_harness_environment(server.base_url, fake_boto3):
-        args = cli.parser().parse_args(["--experiment", str(manifest_path), "--result-dir", str(result_dir)])
-        raised: ConfigurationError | None = None
-        try:
-            cli.execute(args)
-        except ConfigurationError as exc:
-            raised = exc
-        assert raised is not None, "expected ConfigurationError on capacity mismatch"
+def _run_measurement_fail(scenario_path: Path, dataset_path: Path, result_dir: Path) -> str:
+    with LocalMockApiServer(run_outcome="ERROR") as server, _isolated_harness_environment():
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+        with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
+            code = cli.main(_cli_argv(server.base_url, scenario_path, dataset_path, result_dir))
+        assert code == 1, f"expected exit code 1, got {code}: {stderr_buf.getvalue()}"
 
-        assert server.suites_created == [], "seed must not run on capacity mismatch"
-        assert server.runs_created == [], "k6 must not run on capacity mismatch"
-        failure_path = result_dir / FAILURE_FILENAME
-        assert failure_path.is_file(), "expected failure.json on capacity mismatch"
-        failure = json.loads(failure_path.read_text(encoding="utf-8"))
-        assert failure["schema_version"] == 1
-        assert failure["status"] == "ERROR"
-        assert failure["phase"] == "preflight"
-        assert failure["error"]["type"] == "ConfigurationError"
-        assert "expected" in failure["error"]["message"] and "actual" in failure["error"]["message"]
-        assert failure["inputs"]["experiment_id"] == "fixture-smoke"
-        assert "suite_id" not in failure["inputs"]
-        for absent_file in ("k6-summary.json", "aws-metrics.json", "result.json", "report.md"):
-            assert not (result_dir / absent_file).exists(), f"unexpected {absent_file} after preflight failure"
+        for filename in RESULT_FILENAMES:
+            artifact = result_dir / filename
+            assert artifact.is_file() and artifact.stat().st_size > 0, f"missing or empty {filename}"
+        assert not (result_dir / FAILURE_FILENAME).exists(), "unexpected failure.json on measurement FAIL"
 
-        return "preflight capacity 불일치 시 seed/k6 미실행 및 failure.json(phase=preflight) 보존"
+        result = json.loads((result_dir / "result.json").read_text(encoding="utf-8"))
+        report = (result_dir / "report.md").read_text(encoding="utf-8")
+
+        assert result["schema_version"] == 2
+        assert result["acceptance"]["status"] == "FAIL"
+        assert result["k6"]["exit_code"] == cli.K6_THRESHOLD_FAILURE_EXIT_CODE
+        assert result["failure_categories"]["thresholds"] == "FAIL"
+        assert result["failure_categories"]["execution_failures"] >= 1
+        assert result["test_run_diagnostics"]["error_summary"] == {
+            "EVALUATOR:MOCK_EXECUTION_ERROR": result["failure_categories"]["execution_failures"]
+        }
+        checks = {item["name"]: item for item in result["acceptance"]["checks"]}
+        assert checks["completion.failure_rate"]["passed"] is False
+        assert checks["k6.thresholds"]["passed"] is False
+        assert "**FAIL**" in report
+
+        return (
+            f"acceptance 위반 시 exit=1, execution_failures={result['failure_categories']['execution_failures']}, "
+            "result.json(FAIL)·report.md 생성 및 failure.json 미생성 확인"
+        )
 
 
-def _run_mid_run_failure(manifest_path: Path, expected: dict[str, Any], result_dir: Path) -> str:
-    fake_boto3 = _FakeBoto3(expected)
-    with LocalMockApiServer(fail_on_drain=True) as server, _isolated_harness_environment(server.base_url, fake_boto3):
-        args = cli.parser().parse_args(["--experiment", str(manifest_path), "--result-dir", str(result_dir)])
-        raised: ApiError | None = None
-        try:
-            cli.execute(args)
-        except ApiError as exc:
-            raised = exc
-        assert raised is not None, "expected ApiError on simulated drain failure"
+def _run_execution_error(scenario_path: Path, dataset_path: Path, result_dir: Path) -> str:
+    with LocalMockApiServer(fail_on_diagnostics=True) as server, _isolated_harness_environment():
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+        with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
+            code = cli.main(_cli_argv(server.base_url, scenario_path, dataset_path, result_dir))
+        assert code == 2, f"expected exit code 2, got {code}"
+        assert "ERROR:" in stderr_buf.getvalue()
 
         assert len(server.suites_created) == 1
         assert len(server.runs_created) >= 1
         failure_path = result_dir / FAILURE_FILENAME
-        assert failure_path.is_file(), "expected failure.json on mid-run drain failure"
+        assert failure_path.is_file(), "expected failure.json on execution error"
         failure = json.loads(failure_path.read_text(encoding="utf-8"))
         assert failure["schema_version"] == 1
         assert failure["status"] == "ERROR"
-        assert failure["phase"] == "drain"
+        assert failure["phase"] == "report"
         assert failure["error"]["type"] == "ApiError"
-        assert failure["inputs"]["experiment_id"] == "fixture-smoke"
+        assert failure["inputs"]["scenario_id"] == "FIXTURE-SMOKE"
         assert failure["inputs"]["suite_id"] >= 1
         for expected_artifact in (
-            "experiment.yaml", "profile.yaml", "dataset.yaml",
-            "execution-plan.json", "k6-summary.json", "failure.json",
+            "scenario.yaml",
+            "dataset.yaml",
+            "execution-plan.json",
+            "k6-summary.json",
+            "failure.json",
         ):
             assert expected_artifact in failure["available_artifacts"], f"missing {expected_artifact}"
         summary = json.loads((result_dir / "k6-summary.json").read_text(encoding="utf-8"))
         assert isinstance(summary, dict) and "metrics" in summary
-        for absent_file in ("aws-metrics.json", "result.json", "report.md"):
-            assert not (result_dir / absent_file).exists(), f"unexpected {absent_file} after drain failure"
+        for absent_file in ("result.json", "report.md"):
+            assert not (result_dir / absent_file).exists(), f"unexpected {absent_file} after execution error"
 
-        return f"seed·real k6({len(server.runs_created)}건) 후 drain 오류 시 failure.json(phase=drain) 및 k6-summary.json 보존"
+        return f"seed·real k6({len(server.runs_created)}건) 후 오류 시 exit=2, failure.json(phase=report) 및 k6-summary.json 보존"
 
 
-def _execute_scenario(name: str, runner_fn: Any, manifest_path: Path, expected: dict[str, Any]) -> ScenarioResult:
+def _execute_scenario(name: str, runner_fn: Any, scenario_path: Path, dataset_path: Path) -> ScenarioResult:
     work_dir_holder: list[Path] = []
     try:
         with tempfile.TemporaryDirectory(prefix=f"guardbench-local-e2e-{name}-") as tmp_dir:
             work_dir = Path(tmp_dir)
             work_dir_holder.append(work_dir)
-            detail = runner_fn(manifest_path, expected, work_dir / "result")
+            detail = runner_fn(scenario_path, dataset_path, work_dir / "result")
         lingering = _ensure_no_child_k6_processes()
         if lingering:
             return ScenarioResult(name, False, f"잔여 k6 자식 프로세스가 발견되었습니다: {lingering}", work_dir_holder[0])
@@ -606,31 +483,37 @@ def _execute_scenario(name: str, runner_fn: Any, manifest_path: Path, expected: 
         return ScenarioResult(name, False, f"{type(exc).__name__}: {exc}{suffix}", work_dir)
 
 
-def run_all(manifest_path: Path = DEFAULT_MANIFEST) -> list[ScenarioResult]:
+def run_all(
+    scenario_path: Path = DEFAULT_SCENARIO,
+    dataset_path: Path = DEFAULT_DATASET,
+) -> list[ScenarioResult]:
     """Run the three local E2E scenarios sequentially using real Runner and k6."""
-    expected = load_execution_plan(manifest_path).to_dict()["infrastructure"]["expected"]
     scenarios = (
         ("normal_completion", _run_normal_completion),
-        ("capacity_mismatch", _run_capacity_mismatch),
-        ("mid_run_failure", _run_mid_run_failure),
+        ("measurement_fail", _run_measurement_fail),
+        ("execution_error", _run_execution_error),
     )
-    return [_execute_scenario(name, fn, manifest_path, expected) for name, fn in scenarios]
+    return [_execute_scenario(name, fn, scenario_path, dataset_path) for name, fn in scenarios]
 
 
-def format_scope_banner(k6_path: str, manifest_path: Path) -> str:
+def format_scope_banner(k6_path: str, scenario_path: Path, dataset_path: Path) -> str:
     return "\n".join([
         "=== GuardBench Local Mock E2E Harness ===",
-        f"Manifest: {manifest_path}",
+        f"Scenario: {scenario_path}",
+        f"Dataset: {dataset_path}",
+        f"Target mock URL: {MOCK_TARGET_URL} (model={MOCK_TARGET_MODEL}, revision={MOCK_TARGET_REVISION})",
         f"k6 binary: {k6_path}",
-        "실제 실행 구성 요소: Runner 입력 해석(load_execution_plan), cli.execute orchestration, "
-        "preflight/capacity 대조, 실제 k6 프로세스(performance/k6/test-run.js), 결과·실패 진단 보존",
-        "테스트 대역 범위: 로컬 ThreadingHTTPServer 모의 HTTP API, fake boto3 AWS client "
-        "(ecs/rds/sagemaker/sqs/cloudwatch), AWS credential/endpoint 미사용, S3 업로드 생략",
-        "주의: 본 실행은 로컬 기능 검증이며 실제 AWS 인프라 또는 성능 Baseline 검증이 아닙니다.",
+        "실제 실행 구성 요소: Runner CLI 입력 해석(load_execution_plan), cli.main/execute orchestration, "
+        "실제 k6 프로세스(performance/k6/test-run.js), 앱 수준 acceptance 판정, 결과·실패 진단 보존",
+        "테스트 대역 범위: local_e2e.py 내부 로컬 ThreadingHTTPServer 모의 GuardBench API 및 고정 모의 Target URL",
+        "주의: 본 실행은 로컬 기능 검증이며 실제 성능 Baseline 검증이 아닙니다.",
     ])
 
 
-def run_harness(manifest_path: Path = DEFAULT_MANIFEST) -> tuple[int, list[ScenarioResult]]:
+def run_harness(
+    scenario_path: Path = DEFAULT_SCENARIO,
+    dataset_path: Path = DEFAULT_DATASET,
+) -> tuple[int, list[ScenarioResult]]:
     """Validate prerequisites, run all scenarios, and return (exit_code, results)."""
     k6_path = resolve_k6_binary()
     if not k6_path:
@@ -640,8 +523,8 @@ def run_harness(manifest_path: Path = DEFAULT_MANIFEST) -> tuple[int, list[Scena
         )
         return 2, []
 
-    print(format_scope_banner(k6_path, manifest_path))
-    results = run_all(manifest_path)
+    print(format_scope_banner(k6_path, scenario_path, dataset_path))
+    results = run_all(scenario_path, dataset_path)
     for outcome in results:
         status = "PASS" if outcome.passed else "FAIL"
         print(f"[{status}] {outcome.name}: {outcome.detail}")

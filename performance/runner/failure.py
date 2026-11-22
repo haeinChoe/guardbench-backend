@@ -1,4 +1,4 @@
-"""Failure diagnostics and partial artifact preservation for the performance runner."""
+"""Failure diagnostics and local partial artifact preservation for the performance runner."""
 
 from __future__ import annotations
 
@@ -12,17 +12,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .storage import FAILURE_FILENAME, upload_failure_directory
-
+FAILURE_FILENAME = "failure.json"
 FAILURE_SCHEMA_VERSION = 1
 FAILURE_STATUS = "ERROR"
-EXECUTION_PHASES = ("preflight", "seed", "k6", "drain", "metrics", "report", "upload")
+EXECUTION_PHASES = ("preflight", "seed", "k6", "report")
 
 _URL_USERINFO_PATTERN = re.compile(r"(https?://)([^/\s:@]+(?::[^/\s@]+)?@)")
 _BEARER_PATTERN = re.compile(r"(?i)\b(Bearer\s+)([^\s,;'\"]+)")
 _SECRET_KV_PATTERN = re.compile(
-    r"(?i)\b(authorization|password|passwd|secret|token|api[_-]?key|access[_-]?key"
-    r"|aws_secret_access_key|aws_session_token|x-amz-security-token|x-amz-signature)"
+    r"(?i)\b([a-z0-9_-]*(?:authorization|password|passwd|secret|token|api[_-]?key|access[_-]?key|signature)[a-z0-9_-]*)"
     r"(\s*[:=]\s*)([\"']?)(?!Bearer\s)([^\s,;'\"]+)\3"
 )
 
@@ -41,7 +39,6 @@ class RunContext:
     result_dir_owned: bool = False
     phase: str = "preflight"
     inputs: dict[str, Any] = field(default_factory=dict)
-    revisions: dict[str, str] = field(default_factory=dict)
     dry_run: bool = False
 
     def set_phase(self, phase: str) -> None:
@@ -56,52 +53,63 @@ class RunContext:
             return
         self.inputs[key] = value
 
-    def record_revision(self, key: str, value: str) -> None:
-        cleaned = value.strip()
-        if cleaned and cleaned.lower() != "unknown":
-            self.revisions[key] = cleaned
-
-    def record_experiment(
+    def record_cli_inputs(
         self,
         *,
-        experiment_path: Path | str | None = None,
-        experiment_id: str | None = None,
-        infrastructure_id: str | None = None,
-        infrastructure_revision: str | None = None,
+        api_url: str | None = None,
+        target_url: str | None = None,
+        target_model: str | None = None,
+        target_revision: str | None = None,
+        scenario_path: Path | str | None = None,
+        dataset_path: Path | str | None = None,
     ) -> None:
-        """Record experiment identity and input sources defined by ADR 0016."""
-        if experiment_path is not None:
-            raw_path = str(experiment_path).strip()
-            if raw_path:
-                self.record_input("experiment_path", str(Path(raw_path).resolve()))
-        self.record_input("experiment_id", experiment_id)
-        self.record_input("infrastructure_id", infrastructure_id)
-        self.record_input("infrastructure_revision", infrastructure_revision)
+        """Record sanitized connection inputs and source file paths for failure diagnostics."""
+        if isinstance(api_url, str) and api_url.strip():
+            self.record_input("api_url", sanitize_message(api_url.strip()))
+        if isinstance(target_url, str) and target_url.strip():
+            self.record_input("target_url", sanitize_message(target_url.strip()))
+        self.record_input("target_model", target_model)
+        self.record_input("target_revision", target_revision)
+        if scenario_path is not None:
+            raw_scenario = str(scenario_path).strip()
+            if raw_scenario:
+                self.record_input("scenario_path", str(Path(raw_scenario).resolve()))
+        if dataset_path is not None:
+            raw_dataset = str(dataset_path).strip()
+            if raw_dataset:
+                self.record_input("dataset_path", str(Path(raw_dataset).resolve()))
 
     def record_execution_plan(self, plan: Mapping[str, Any]) -> None:
-        """Record resolved execution-plan metadata defined by ADR 0016."""
-        experiment = plan.get("experiment")
-        experiment_dict = experiment if isinstance(experiment, Mapping) else {}
-        infrastructure = plan.get("infrastructure")
-        infrastructure_dict = infrastructure if isinstance(infrastructure, Mapping) else {}
+        """Record resolved connection, scenario, and dataset metadata."""
+        connection = plan.get("connection")
+        if isinstance(connection, Mapping):
+            api_url = connection.get("api_url")
+            if isinstance(api_url, str) and api_url.strip():
+                self.record_input("api_url", sanitize_message(api_url))
+            target = connection.get("target")
+            if isinstance(target, Mapping):
+                target_url = target.get("url")
+                if isinstance(target_url, str) and target_url.strip():
+                    self.record_input("target_url", sanitize_message(target_url))
+                self.record_input("target_model", target.get("model"))
+                self.record_input("target_revision", target.get("revision"))
+
         sources = plan.get("sources")
-        sources_dict = sources if isinstance(sources, Mapping) else {}
-        exp_source = sources_dict.get("experiment")
-        exp_source_dict = exp_source if isinstance(exp_source, Mapping) else {}
+        if isinstance(sources, Mapping):
+            for source_key, input_key in (("scenario", "scenario_path"), ("dataset", "dataset_path")):
+                source = sources.get(source_key)
+                if isinstance(source, Mapping):
+                    raw_path = source.get("path")
+                    if isinstance(raw_path, str) and raw_path.strip():
+                        self.record_input(input_key, str(Path(raw_path).resolve()))
 
-        self.record_experiment(
-            experiment_path=exp_source_dict.get("path"),
-            experiment_id=experiment_dict.get("id"),
-            infrastructure_id=infrastructure_dict.get("id"),
-            infrastructure_revision=infrastructure_dict.get("revision"),
-        )
-
-        profile = plan.get("profile")
-        if isinstance(profile, Mapping):
-            test = profile.get("test")
+        scenario = plan.get("scenario")
+        if isinstance(scenario, Mapping):
+            test = scenario.get("test")
             if isinstance(test, Mapping):
-                self.record_input("profile_id", test.get("id"))
-                self.record_input("profile_type", test.get("type"))
+                self.record_input("scenario_id", test.get("id"))
+                self.record_input("scenario_type", test.get("type"))
+
         dataset = plan.get("dataset")
         if isinstance(dataset, Mapping):
             self.record_input("dataset_id", dataset.get("id"))
@@ -152,7 +160,6 @@ def build_failure_payload(
         "failed_at": _iso(failed_at),
         "error": error_summary(exc),
         "inputs": dict(context.inputs),
-        "revisions": dict(context.revisions),
         "available_artifacts": list(available_artifacts),
         "preservation_errors": list(preservation_errors),
     }
@@ -162,8 +169,7 @@ def _copy_raw_inputs(context: RunContext, record_error: Callable[[str, BaseExcep
     if context.result_dir is None or not context.result_dir_owned:
         return
     for input_key, target_name in (
-        ("experiment_path", "experiment.yaml"),
-        ("profile_path", "profile.yaml"),
+        ("scenario_path", "scenario.yaml"),
         ("dataset_path", "dataset.yaml"),
     ):
         raw_path = context.inputs.get(input_key)
@@ -178,7 +184,7 @@ def _copy_raw_inputs(context: RunContext, record_error: Callable[[str, BaseExcep
             record_error("copy_input_artifact", exc)
 
 
-def _backfill_experiment_metadata_from_plan(context: RunContext) -> None:
+def _backfill_metadata_from_plan(context: RunContext) -> None:
     """Populate missing failure inputs from an available execution-plan.json."""
     if context.result_dir is None or not context.result_dir_owned:
         return
@@ -192,16 +198,28 @@ def _backfill_experiment_metadata_from_plan(context: RunContext) -> None:
     if not isinstance(plan, dict):
         return
 
-    experiment = plan.get("experiment") if isinstance(plan.get("experiment"), dict) else {}
-    infrastructure = plan.get("infrastructure") if isinstance(plan.get("infrastructure"), dict) else {}
+    connection = plan.get("connection") if isinstance(plan.get("connection"), dict) else {}
+    target = connection.get("target") if isinstance(connection.get("target"), dict) else {}
+    scenario = plan.get("scenario") if isinstance(plan.get("scenario"), dict) else {}
+    test = scenario.get("test") if isinstance(scenario.get("test"), dict) else {}
+    dataset = plan.get("dataset") if isinstance(plan.get("dataset"), dict) else {}
     sources = plan.get("sources") if isinstance(plan.get("sources"), dict) else {}
-    exp_source = sources.get("experiment") if isinstance(sources.get("experiment"), dict) else {}
+    scenario_source = sources.get("scenario") if isinstance(sources.get("scenario"), dict) else {}
+    dataset_source = sources.get("dataset") if isinstance(sources.get("dataset"), dict) else {}
 
+    api_url = connection.get("api_url")
+    target_url = target.get("url")
     candidates = {
-        "experiment_path": exp_source.get("path"),
-        "experiment_id": experiment.get("id"),
-        "infrastructure_id": infrastructure.get("id"),
-        "infrastructure_revision": infrastructure.get("revision"),
+        "api_url": sanitize_message(api_url) if isinstance(api_url, str) else None,
+        "target_url": sanitize_message(target_url) if isinstance(target_url, str) else None,
+        "target_model": target.get("model"),
+        "target_revision": target.get("revision"),
+        "scenario_path": scenario_source.get("path"),
+        "dataset_path": dataset_source.get("path"),
+        "scenario_id": test.get("id"),
+        "scenario_type": test.get("type"),
+        "dataset_id": dataset.get("id"),
+        "test_case_count": dataset.get("test_case_count"),
     }
     for key, value in candidates.items():
         if key not in context.inputs:
@@ -211,12 +229,8 @@ def _backfill_experiment_metadata_from_plan(context: RunContext) -> None:
 def preserve_failure(
     context: RunContext,
     exc: BaseException,
-    *,
-    bucket: str | None = None,
-    s3_client=None,
-    upload_failure_fn=upload_failure_directory,
 ) -> tuple[Path | None, list[dict[str, str]]]:
-    """Persist failure.json and partial artifacts while never masking the original cause."""
+    """Persist local failure.json and partial artifacts while never masking the original cause."""
     if context.dry_run:
         return None, []
 
@@ -242,7 +256,7 @@ def preserve_failure(
                 _copy_raw_inputs(context, record_preservation_error)
 
         if context.result_dir is not None and context.result_dir_owned:
-            _backfill_experiment_metadata_from_plan(context)
+            _backfill_metadata_from_plan(context)
             candidate_path = context.result_dir / FAILURE_FILENAME
             try:
                 available = discover_available_artifacts(context.result_dir, include_failure_file=True)
@@ -261,27 +275,6 @@ def preserve_failure(
             except Exception as write_exc:
                 failure_path = None
                 record_preservation_error("write_failure_artifact", write_exc)
-
-        if bucket and failure_path is not None and context.phase != "upload":
-            try:
-                upload_failure_fn(context.result_dir, bucket, context.run_id, s3_client=s3_client)
-            except Exception as upload_exc:
-                record_preservation_error("upload_failure_artifacts", upload_exc)
-                try:
-                    available = discover_available_artifacts(context.result_dir, include_failure_file=True)
-                    payload = build_failure_payload(
-                        context,
-                        exc,
-                        failed_at=failed_at,
-                        available_artifacts=available,
-                        preservation_errors=preservation_errors,
-                    )
-                    failure_path.write_text(
-                        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-                        encoding="utf-8",
-                    )
-                except Exception as rewrite_exc:
-                    record_preservation_error("rewrite_failure_artifact", rewrite_exc)
     except Exception as unexpected_exc:  # pragma: no cover - defensive guard against masking original error
         record_preservation_error("preserve_failure", unexpected_exc)
 

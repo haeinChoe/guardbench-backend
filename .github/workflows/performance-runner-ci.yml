@@ -1,0 +1,48 @@
+name: Performance Runner CI
+
+on:
+  pull_request:
+    paths:
+      - performance/**
+      - .github/workflows/performance-runner-ci.yml
+  push:
+    branches:
+      - dev
+    paths:
+      - performance/**
+      - .github/workflows/performance-runner-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: runner tests and local mock E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Runner Python dependencies
+        run: python -m pip install -r performance/requirements.txt
+      - name: Install pinned k6 from performance/k6/VERSION
+        shell: bash
+        run: |
+          set -euo pipefail
+          k6_version="$(tr -d '[:space:]' < performance/k6/VERSION)"
+          test -n "$k6_version"
+          install_dir="$RUNNER_TEMP/k6-bin"
+          mkdir -p "$install_dir"
+          curl --fail --location --silent --show-error \
+            "https://github.com/grafana/k6/releases/download/v${k6_version}/k6-v${k6_version}-linux-amd64.tar.gz" \
+            | tar --extract --gzip --strip-components=1 --directory="$install_dir" \
+              "k6-v${k6_version}-linux-amd64/k6"
+          chmod 0755 "$install_dir/k6"
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/k6" version
+      - name: Run Runner unit tests and local mock E2E
+        run: |
+          python -m unittest discover -s performance -p 'test_*.py' -t .
+          python -m performance.runner.local_e2e
