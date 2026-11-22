@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 from performance.runner.config import load_yaml, validate_dataset
-from performance.runner.dataset import seed_payload_from_manifest
+from performance.runner.dataset import seed_payload_from_dataset
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def load_seed_payload(path: Path):
     dataset = load_yaml(path)
     validate_dataset(dataset)
-    return seed_payload_from_manifest(dataset, path)
+    return seed_payload_from_dataset(dataset, path)
 
 
 class PerformanceDatasetTest(unittest.TestCase):

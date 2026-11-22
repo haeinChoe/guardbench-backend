@@ -1,60 +1,41 @@
-# Experiment input validation fixtures
+# Runner Input Validation Fixtures
 
-These files validate the Runner's experiment manifest v1 interface
-([ADR 0016](../../docs/decisions/0016-performance-experiment-plan.md), APPROVED/ACCEPTED).
-Resource names, CPU/memory, counts, workload and acceptance values are mock inputs.
-They do not define a real infrastructure preset or operating goals.
+These files validate the Runner CLI input resolution and scenario/dataset
+contracts ([ADR 0016](../../docs/decisions/0016-performance-experiment-plan.md),
+[ADR 0017](../../docs/decisions/0017-performance-runner-infrastructure-boundary.md)).
+Names, counts, workload values, and acceptance numbers are synthetic test inputs.
 
-Run from the repository root with Python dependencies from
+Run `--dry-run` from the repository root with Python dependencies from
 `performance/requirements.txt` installed:
 
 ```bash
 python3 -m performance.runner.cli \
-  --experiment performance/fixtures/experiments/smoke.yaml \
-  --dry-run \
-  --result-dir /tmp/guardbench-fixture-plan
+  --api-url http://127.0.0.1:9 \
+  --target-url http://127.0.0.1:9/v1/chat/completions \
+  --target-model m \
+  --scenario performance/fixtures/profiles/smoke.yaml \
+  --dataset performance/fixtures/datasets/two-cases.yaml \
+  --result-dir /tmp/guardbench-fixture-plan \
+  --dry-run
 ```
 
-Use a new result directory for each invocation. No AWS credentials, running API,
-DB or k6 are needed. The command validates and prints the plan, writes
-`execution-plan.json`, and preserves original `experiment.yaml`,
-`profile.yaml` and `dataset.yaml` files. It makes no external calls.
-Omit `--dry-run` to execute against the configured services. Actual execution requires
-application/infrastructure revisions, API and queue connection settings, and a matching
-AWS capacity snapshot before seeding or starting k6.
+Use a fresh `--result-dir` for each invocation. `--dry-run` performs no network
+or subprocess calls, prints the resolved plan JSON, and writes
+`scenario.yaml`, `dataset.yaml`, and `execution-plan.json`.
 
-A manifest selects one infrastructure ID/revision, expected capacity, Profile and
-Dataset. Worker ECS, RDS and SageMaker expectations are required; API ECS is
-optional and requires a complete API service expectation when present. Counts
-must be positive integers. CPU and memory accept positive integers or decimal
-integer strings and normalize to decimal strings. Unknown fields and malformed
-nested values are rejected. IaC owns actual capacity; Profile owns workload,
-target and acceptance and cannot contain capacity fields.
+- `profiles/smoke.yaml`: `SMOKE` single-target workload fixture (`target.type: HTTP_ENDPOINT`, app-level `acceptance` only).
+- `profiles/staged-stress.yaml`: `STRESS` staged workload fixture (`stages` curve + app-level `acceptance`).
+- `datasets/two-cases.yaml`: deterministic two-case `synthetic-testset` fixture.
 
-Profile/Dataset references resolve relative to the experiment file, independently
-of the shell's working directory. Existing Dataset source paths still resolve
-relative to the Dataset manifest and HTTP fixtures retain their pinned checksum
-verification. Environment expansion happens before validation. Missing target
-URL/model values, unresolved required input, nonfinite numbers and credential-bearing
-target URLs are rejected.
+Python consumers call `performance.runner.plan.load_execution_plan(...)`.
+The frozen `ExecutionPlan` exposes `to_dict()`, `connection`, `scenario`,
+`dataset`, `seed_payload`, `test_case_count`, `source_paths`, and `source_bytes`.
+Each source YAML file is read once before environment expansion so SHA-256 hashes
+reflect the raw input bytes and later file or environment edits cannot mutate
+the resolved snapshot.
 
-`execution-plan.json` contains `schema_version: 1`, `experiment: {id}`,
-`infrastructure: {id, revision, expected}`, the full resolved Profile,
-`dataset: {id, test_case_count}` and `sources`. Each of the experiment/Profile/Dataset
-sources includes its absolute path and SHA-256 of the original file bytes, before
-environment expansion or CPU/memory normalization.
-
-Python consumers call `performance.runner.plan.load_execution_plan(Path(...))`.
-The frozen `ExecutionPlan` exposes `to_dict()`, `profile`, `dataset`, `seed_payload`,
-`test_case_count`, `source_paths` and `source_bytes`. Mapping/payload properties
-return detached copies. The loader reads each YAML input once and retains the
-parsed seed payload so later file or environment changes cannot alter the plan.
-
-`--experiment` is the Runner's only, required input. Resource identifiers and expected
-capacity come only from the manifest. `bin/verify-runtime`
-dry-runs this fixture manifest to verify the image. Product APIs, DB schema,
-deployment configuration and production dependencies are unchanged.
+Run the Runner test suite:
 
 ```bash
-python3 -m unittest discover -s performance/runner -p 'test_*.py'
+python3 -m unittest discover -s performance -p 'test_*.py' -t .
 ```
