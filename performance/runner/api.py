@@ -1,4 +1,4 @@
-"""Small stdlib HTTP client for the public GuardBench API."""
+"""Minimal stdlib HTTP client for the public GuardBench API."""
 
 from __future__ import annotations
 

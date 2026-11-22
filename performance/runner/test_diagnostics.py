@@ -1,18 +1,14 @@
-import os
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 from performance.runner.acceptance import evaluate
-from performance.runner.aws import CloudWatchMetricCollector, QueueInspector
-from performance.runner.cli import _collect_run_diagnostics, _required_revision, _threshold_inputs
-from performance.runner.config import ConfigurationError
+from performance.runner.cli import _collect_run_diagnostics, _threshold_inputs
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def profile() -> dict:
+def scenario() -> dict:
     return {
         "workload": {
             "concurrent_test_runs": 1,
@@ -22,11 +18,7 @@ def profile() -> dict:
             "completion_timeout_seconds": 300,
             "polling_interval_seconds": 2,
         },
-        "target": {
-            "identifier": "https://target.example.test/v1/chat/completions",
-            "model": "test-model",
-            "revision": "target-revision",
-        },
+        "target": {"type": "HTTP_ENDPOINT"},
         "acceptance": {
             "api": {
                 "create_latency_ms": {"p50": 1000, "p95": 2000, "p99": 3000},
@@ -35,22 +27,20 @@ def profile() -> dict:
             "completion": {
                 "max_seconds": 300,
                 "failure_rate": 0,
-                "queue_drain_seconds": 120,
-                "dlq_messages": 0,
             },
         },
     }
 
 
-def aws_metrics() -> dict:
+def connection() -> dict:
     return {
-        "status": "COLLECTED",
-        "metrics": [
-            {"id": "ecs_cpu_utilization", "values": [1]},
-            {"id": "sqs_workitems_visible", "values": [0]},
-            {"id": "rds_cpu_utilization", "values": [1]},
-            {"id": "sagemaker_invocations", "values": [78]},
-        ],
+        "api_url": "https://api.example.test",
+        "target": {
+            "type": "HTTP_ENDPOINT",
+            "url": "https://target.example.test/v1/chat/completions",
+            "model": "test-model",
+            "revision": "target-revision",
+        },
     }
 
 
@@ -72,11 +62,7 @@ class PerformanceDiagnosticsTest(unittest.TestCase):
             }
         }
 
-        result = evaluate(
-            profile(), summary,
-            {"passed": True, "duration_seconds": 0.058},
-            [], aws_metrics(),
-        )
+        result = evaluate(scenario(), summary)
         by_name = {check["name"]: check for check in result["checks"]}
 
         self.assertEqual(1979.597112, by_name["api.create_latency.p(95)"]["actual"])
@@ -110,11 +96,7 @@ class PerformanceDiagnosticsTest(unittest.TestCase):
             }
         }
 
-        result = evaluate(
-            profile(), summary,
-            {"passed": True, "duration_seconds": 0.07},
-            [], aws_metrics(),
-        )
+        result = evaluate(scenario(), summary)
         by_name = {check["name"]: check for check in result["checks"]}
 
         self.assertEqual(0.0, by_name["api.create_error_rate"]["actual"])
@@ -133,11 +115,7 @@ class PerformanceDiagnosticsTest(unittest.TestCase):
             }
         }
 
-        result = evaluate(
-            profile(), summary,
-            {"passed": True, "duration_seconds": 1},
-            [], aws_metrics(),
-        )
+        result = evaluate(scenario(), summary)
 
         self.assertEqual("PASS", result["status"])
 
@@ -148,46 +126,12 @@ class PerformanceDiagnosticsTest(unittest.TestCase):
         self.assertIn("'p(95)'", script)
         self.assertIn("'p(99)'", script)
 
-    def test_required_revisions_reject_unknown(self):
-        with patch.dict(os.environ, {"APP_REVISION": "unknown"}, clear=True):
-            with self.assertRaises(ConfigurationError):
-                _required_revision("APP_REVISION")
-
-    def test_threshold_inputs_are_preserved_from_profile(self):
-        inputs = _threshold_inputs(profile(), "run-1", 1, "https://api.example.test")
+    def test_threshold_inputs_are_preserved_from_scenario(self):
+        inputs = _threshold_inputs(scenario(), connection(), "run-1", 1)
         self.assertEqual("1000", inputs["PERF_API_P50_MS"])
         self.assertEqual("2000", inputs["PERF_API_P95_MS"])
         self.assertEqual("3000", inputs["PERF_API_P99_MS"])
         self.assertEqual("300", inputs["PERF_COMPLETION_MAX_SECONDS"])
-
-    def test_queue_snapshot_does_not_fabricate_oldest_age(self):
-        class FakeSqs:
-            def get_queue_attributes(self, **kwargs):
-                self.request = kwargs
-                return {"Attributes": {
-                    "ApproximateNumberOfMessages": "0",
-                    "ApproximateNumberOfMessagesNotVisible": "0",
-                    "ApproximateNumberOfMessagesDelayed": "0",
-                }}
-
-        inspector = QueueInspector.__new__(QueueInspector)
-        inspector.client = FakeSqs()
-        snapshot = inspector.snapshot(["https://sqs.example.test/queue"])
-
-        self.assertIsNone(snapshot[0]["oldestAgeSeconds"])
-        self.assertNotIn("ApproximateAgeOfOldestMessage", inspector.client.request["AttributeNames"])
-
-    def test_metric_configuration_rejects_unresolved_dimensions(self):
-        collector = CloudWatchMetricCollector.__new__(CloudWatchMetricCollector)
-        collector.config = {
-            "metrics": [{
-                "id": "sqs_workitems_visible",
-                "dimensions": {"QueueName": "${PERF_SOURCE_QUEUE_WORK_ITEMS_NAME}"},
-            }]
-        }
-
-        with self.assertRaisesRegex(ConfigurationError, "sqs_workitems_visible"):
-            collector.validate_configuration()
 
     def test_failed_run_diagnostics_preserve_ids_and_error_summary(self):
         class FakeApi:

@@ -2,7 +2,7 @@
 
 > Status: APPROVED
 > Owner: Team
-> Last reviewed: 2026-11-21
+> Last reviewed: 2026-11-22
 > Canonical source: GitHub
 > Origin: 없음
 
@@ -25,11 +25,13 @@
 | Context 간 Port, Integration Adapter, 로컬 ID·VO와 Java 타입 격리 | [ADR 0006](0006-independent-domain-contract-boundaries.md) | Aggregate 저장 경계는 [ADR 0001](0001-domain-type-ownership-and-aggregate-boundaries.md)과 [ADR 0003](0003-result-aggregate-and-write-port-boundaries.md), 최종화는 [ADR 0004](0004-testrun-finalization-atomicity.md) |
 | Worker 선점, 동시 실행, 잠금/CAS, retry·timeout | [ADR 0005](0005-async-test-run-execution-contract.md), [ADR 0006](0006-independent-domain-contract-boundaries.md) | 결과 저장 경계는 [ADR 0003](0003-result-aggregate-and-write-port-boundaries.md), 최종화 불변식은 [ADR 0004](0004-testrun-finalization-atomicity.md), 물리 스키마는 [ADR 0002](0002-postgresql-persistence-contract.md), claim·Outbox 물리 저장은 [ADR 0008](0008-async-testrun-persistence-contract.md) |
 | SQS 통합 테스트 에뮬레이터, 테스트용 visibility·lease 시간 설정 | [ADR 0015](0015-floci-sqs-test-emulator.md) | retry·timeout 계약 자체를 바꾸면 [ADR 0005](0005-async-test-run-execution-contract.md) |
-| 성능 실험 실행 계획, manifest, capacity 대조, 단계형 workload, 실패 artifact | [ADR 0016](0016-performance-experiment-plan.md) | 기존 운영 절차·지표는 [성능 테스트 운영](../performance-testing.md)을 추가한다. |
+| 성능 테스트 유형, 단계형 workload, 단일 실행 계획, 실패 진단 | [ADR 0016](0016-performance-experiment-plan.md), [ADR 0017](0017-performance-runner-infrastructure-boundary.md) | 실행 방법과 산출물 상세는 [성능 테스트](../performance-testing.md)를 추가한다. |
 
 ## 성능 테스트 실행 계약
 
-[ADR 0016](0016-performance-experiment-plan.md)은 인프라 구성 × 시나리오 실행 계획의 APPROVED/ACCEPTED 계약이다. 인프라 capacity와 Profile의 workload 소유권은 기존 계약을 유지한다.
+[ADR 0016](0016-performance-experiment-plan.md)은 테스트 유형(`SMOKE`/`STRESS`/`SOAK`), 단계형 workload와 `C` 의미, 단일 실행 계획 및 실패 진단 자료(`failure.json`) 계약을 정한다.
+
+[ADR 0017](0017-performance-runner-infrastructure-boundary.md)은 Backend Runner와 인프라의 소유권 경계, CLI 입력·결과 계약을 정한다. 인프라 관련 범위는 ADR 0017이 소유한다.
 
 ## 비동기 TestRun 계약 맵
 
@@ -56,7 +58,8 @@ ADR 0014  HTTP 표준 오류 응답을 GuardBench Envelope로 통일
 
 ADR 0015  SQS 통합 테스트 에뮬레이터를 Floci로 교체
 
-ADR 0016  인프라 구성과 시나리오를 분리한 성능 실험 실행 계획
+ADR 0016  성능 실험 테스트 유형, 단계형 workload와 실패 진단 계약
+└─ ADR 0017  Backend Runner와 인프라의 경계
 
 ADR 0006  Context 간 Java 타입 공유와 직접 의존을 제한
 ```
