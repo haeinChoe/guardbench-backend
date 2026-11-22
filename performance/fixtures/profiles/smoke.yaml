@@ -1,0 +1,21 @@
+# Synthetic functional validation only; not real performance acceptance targets.
+test:
+  id: FIXTURE-SMOKE
+  name: synthetic smoke validation
+  type: SMOKE
+workload:
+  concurrent_test_runs: 2
+  ramp_up_seconds: 0
+  duration_seconds: 1
+  max_iterations_per_vu: 1
+  completion_timeout_seconds: 10
+  polling_interval_seconds: 0.1
+target:
+  type: HTTP_ENDPOINT
+acceptance:
+  api:
+    create_latency_ms: {p50: 1000, p95: 2000, p99: 3000}
+    error_rate: 0
+  completion:
+    max_seconds: 10
+    failure_rate: 0
