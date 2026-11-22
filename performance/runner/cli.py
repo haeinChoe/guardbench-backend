@@ -1,4 +1,4 @@
-"""CLI entrypoint for repeatable GuardBench performance experiments."""
+"""CLI entrypoint for GuardBench performance runner."""
 
 from __future__ import annotations
 
@@ -7,27 +7,18 @@ import json
 import os
 import subprocess
 import sys
-import time
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .capacity import assert_manifest_capacity
 from .acceptance import evaluate
 from .api import ApiClient, ApiError
-from .aws import (
-    CloudWatchMetricCollector,
-    InfrastructureCapacityCollector,
-    QueueInspector,
-    queue_urls_from_environment,
-)
 from .config import ConfigurationError
-from .plan import load_execution_plan
 from .failure import RunContext, preserve_failure, sanitize_message
+from .plan import load_execution_plan
 from .results import render_report, result_identity
-from .storage import ResultUploadError, upload_failure_directory, upload_result_directory
 
 
 class RunnerError(RuntimeError):
@@ -50,60 +41,30 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _required_revision(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if not value or value.lower() == "unknown":
-        raise ConfigurationError(f"실제 성능 실행에는 {name}을(를) 명시해야 합니다.")
-    return value
-
-
-def _capture_known_revisions(context: RunContext) -> None:
-    context.record_revision("application", os.environ.get("APP_REVISION", ""))
-    context.record_revision("infrastructure", os.environ.get("INFRA_REVISION", ""))
-
-
-def _queue_state(inspector: QueueInspector, source_urls: list[str], dlq_urls: list[str]) -> dict[str, Any]:
-    return {"source": inspector.snapshot(source_urls), "dlq": inspector.snapshot(dlq_urls)}
-
-
-def _assert_preflight(api: ApiClient, inspector: QueueInspector, source_urls: list[str], dlq_urls: list[str]) -> dict[str, Any]:
+def _assert_preflight(api: ApiClient) -> dict[str, Any]:
     api.health_check()
     active = api.list_runs(statuses=["QUEUED", "PREPARING", "RUNNING"])
     if active:
         raise RunnerError(f"이전 TestRun workload가 처리 중입니다: {len(active)}건")
-    queues = _queue_state(inspector, source_urls, dlq_urls)
-    if not inspector.is_empty(queues["source"]) or not inspector.is_empty(queues["dlq"]):
-        raise RunnerError("이전 테스트의 SQS source queue 또는 DLQ가 비어 있지 않습니다.")
-    return {"activeRuns": 0, "queues": queues}
+    return {"activeRuns": 0}
 
 
-def _wait_for_drain(api: ApiClient, inspector: QueueInspector, source_urls: list[str],
-                    started_at: datetime, timeout_seconds: float, polling_seconds: float) -> dict[str, Any]:
-    drain_started = time.monotonic()
-    last_queues: dict[str, Any] = {}
-    while time.monotonic() - drain_started <= timeout_seconds:
-        active = api.list_runs(statuses=["QUEUED", "PREPARING", "RUNNING"], created_from=started_at, created_to=_now())
-        last_queues = {"source": inspector.snapshot(source_urls)}
-        if not active and inspector.is_empty(last_queues["source"]):
-            return {"passed": True, "duration_seconds": round(time.monotonic() - drain_started, 3),
-                    "active_runs": 0, "queues": last_queues}
-        time.sleep(polling_seconds)
-    active = api.list_runs(statuses=["QUEUED", "PREPARING", "RUNNING"], created_from=started_at, created_to=_now())
-    return {"passed": False, "duration_seconds": round(time.monotonic() - drain_started, 3),
-            "active_runs": len(active), "queues": last_queues}
-
-
-def _k6_environment(profile: dict[str, Any], run_id: str, suite_id: int, base_url: str) -> dict[str, str]:
-    workload = profile["workload"]
-    target = profile["target"]
-    api = profile["acceptance"]["api"]
-    completion = profile["acceptance"]["completion"]
+def _k6_environment(
+    scenario: dict[str, Any],
+    connection: dict[str, Any],
+    run_id: str,
+    suite_id: int,
+) -> dict[str, str]:
+    workload = scenario["workload"]
+    target = connection["target"]
+    api = scenario["acceptance"]["api"]
+    completion = scenario["acceptance"]["completion"]
     environment = {
-        "PERF_BASE_URL": base_url,
+        "PERF_BASE_URL": connection["api_url"],
         "PERF_SUITE_ID": str(suite_id),
-        "PERF_TARGET_URL": target["identifier"],
+        "PERF_TARGET_URL": target["url"],
         "PERF_TARGET_MODEL": target["model"],
-        "PERF_TARGET_REVISION": target.get("revision", ""),
+        "PERF_TARGET_REVISION": target.get("revision") or "",
         "PERF_RUN_ID": run_id,
         "PERF_CONCURRENT_TEST_RUNS": str(workload["concurrent_test_runs"]),
         "PERF_MAX_ITERATIONS_PER_VU": str(workload.get("max_iterations_per_vu", 0)),
@@ -124,26 +85,49 @@ def _k6_environment(profile: dict[str, Any], run_id: str, suite_id: int, base_ur
     return environment
 
 
-def _threshold_inputs(profile: dict[str, Any], run_id: str, suite_id: int, base_url: str) -> dict[str, str]:
-    environment = _k6_environment(profile, run_id, suite_id, base_url)
+def _threshold_inputs(
+    scenario: dict[str, Any],
+    connection: dict[str, Any],
+    run_id: str,
+    suite_id: int,
+) -> dict[str, str]:
+    environment = _k6_environment(scenario, connection, run_id, suite_id)
     names = (
-        "PERF_API_P50_MS", "PERF_API_P95_MS", "PERF_API_P99_MS", "PERF_API_ERROR_RATE",
-        "PERF_COMPLETION_MAX_SECONDS", "PERF_COMPLETION_FAILURE_RATE",
+        "PERF_API_P50_MS",
+        "PERF_API_P95_MS",
+        "PERF_API_P99_MS",
+        "PERF_API_ERROR_RATE",
+        "PERF_COMPLETION_MAX_SECONDS",
+        "PERF_COMPLETION_FAILURE_RATE",
     )
     return {name: environment[name] for name in names}
 
 
-def run_k6(profile: dict[str, Any], run_id: str, suite_id: int, base_url: str,
-           summary_path: Path, repo_root: Path) -> int:
+def run_k6(
+    scenario: dict[str, Any],
+    connection: dict[str, Any],
+    run_id: str,
+    suite_id: int,
+    summary_path: Path,
+    repo_root: Path,
+) -> int:
     environment = os.environ.copy()
     for name in ("PERF_STAGES_JSON", "PERF_RAMP_UP_SECONDS", "PERF_DURATION_SECONDS"):
         environment.pop(name, None)
-    environment.update(_k6_environment(profile, run_id, suite_id, base_url))
+    environment.update(_k6_environment(scenario, connection, run_id, suite_id))
     try:
-        result = subprocess.run([
-            os.environ.get("K6_BIN", "k6"), "run", "--summary-export", str(summary_path),
-            str(repo_root / "performance/k6/test-run.js"),
-        ], cwd=repo_root, env=environment, check=False)
+        result = subprocess.run(
+            [
+                os.environ.get("K6_BIN", "k6"),
+                "run",
+                "--summary-export",
+                str(summary_path),
+                str(repo_root / "performance/k6/test-run.js"),
+            ],
+            cwd=repo_root,
+            env=environment,
+            check=False,
+        )
     except OSError as exc:
         raise RunnerError("k6 workload 실행에 실패했습니다.") from exc
     if result.returncode not in {0, K6_THRESHOLD_FAILURE_EXIT_CODE}:
@@ -163,10 +147,15 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def _collect_run_diagnostics(api: ApiClient, suite_id: int,
-                             started_at: datetime, finished_at: datetime) -> dict[str, Any]:
+def _collect_run_diagnostics(
+    api: ApiClient,
+    suite_id: int,
+    started_at: datetime,
+    finished_at: datetime,
+) -> dict[str, Any]:
     runs = [
-        run for run in api.list_runs(created_from=started_at, created_to=finished_at)
+        run
+        for run in api.list_runs(created_from=started_at, created_to=finished_at)
         if run.get("testSuiteId") == suite_id
     ]
     failed_runs: list[dict[str, Any]] = []
@@ -211,22 +200,38 @@ def execute(args: argparse.Namespace) -> int:
 
     try:
         context.set_phase("preflight")
-        _capture_known_revisions(context)
-        context.record_experiment(experiment_path=args.experiment)
+        context.record_cli_inputs(
+            api_url=args.api_url,
+            target_url=args.target_url,
+            target_model=args.target_model,
+            target_revision=args.target_revision,
+            scenario_path=args.scenario,
+            dataset_path=args.dataset,
+        )
         context.result_dir = (
-            Path(args.result_dir).resolve() if args.result_dir else repo_root / "performance/results" / context.run_id
+            Path(args.result_dir).resolve()
+            if args.result_dir
+            else repo_root / "performance/results" / context.run_id
         )
 
-        execution_plan = load_execution_plan(Path(args.experiment))
+        execution_plan = load_execution_plan(
+            api_url=args.api_url,
+            target_url=args.target_url,
+            target_model=args.target_model,
+            target_revision=args.target_revision or None,
+            scenario_path=Path(args.scenario),
+            dataset_path=Path(args.dataset),
+        )
         plan = execution_plan.to_dict()
         context.record_execution_plan(plan)
-        for name in ("profile", "dataset"):
-            context.record_input(f"{name}_path", str(execution_plan.source_paths[name]))
-        profile = execution_plan.profile
+
+        scenario = execution_plan.scenario
+        connection = execution_plan.connection
         dataset = execution_plan.dataset
         payload = execution_plan.seed_payload
         test_case_count = execution_plan.test_case_count
-        run_id = f"{profile['test']['id']}-{run_started_at.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+
+        run_id = f"{scenario['test']['id']}-{run_started_at.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
         context.run_id = run_id
         if not args.result_dir:
             context.result_dir = repo_root / "performance/results" / run_id
@@ -237,31 +242,16 @@ def execute(args: argparse.Namespace) -> int:
         for name, source in execution_plan.source_bytes.items():
             (result_dir / f"{name}.yaml").write_bytes(source)
         (result_dir / "execution-plan.json").write_text(
-            json.dumps(plan, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+            json.dumps(plan, indent=2, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
 
         if args.dry_run:
             print(json.dumps(plan, indent=2))
             return 0
 
-        revisions = {
-            "application": _required_revision("APP_REVISION"),
-            "infrastructure": _required_revision("INFRA_REVISION"),
-        }
-        base_url = os.environ.get("PERF_BASE_URL", "").strip()
-        if not base_url:
-            raise ConfigurationError("실제 성능 실행에는 PERF_BASE_URL이 필요합니다.")
-        api = ApiClient(base_url)
-        source_urls, dlq_urls = queue_urls_from_environment()
-        expected_capacity = plan["infrastructure"]["expected"]
-        inspector = QueueInspector()
-        metric_collector = CloudWatchMetricCollector(
-            repo_root / "performance/metrics/aws.yaml", resources=expected_capacity)
-        metric_collector.validate_configuration()
-        preflight = _assert_preflight(api, inspector, source_urls, dlq_urls)
-        infrastructure_capacity = InfrastructureCapacityCollector().collect(expected=expected_capacity)
-        preflight["capacity"] = assert_manifest_capacity(expected_capacity, infrastructure_capacity)
-        worker_capacity = infrastructure_capacity["ecs"]["worker"]
-        infrastructure_capacity["revisions"] = revisions
+        api = ApiClient(connection["api_url"])
+        preflight = _assert_preflight(api)
 
         context.set_phase("seed")
         api.health_check()
@@ -273,45 +263,34 @@ def execute(args: argparse.Namespace) -> int:
         context.set_phase("k6")
         started_at = _now()
         summary_path = result_dir / "k6-summary.json"
-        threshold_inputs = _threshold_inputs(profile, run_id, suite_id, base_url)
-        k6_exit_code = run_k6(profile, run_id, suite_id, base_url, summary_path, repo_root)
+        threshold_inputs = _threshold_inputs(scenario, connection, run_id, suite_id)
+        k6_exit_code = run_k6(scenario, connection, run_id, suite_id, summary_path, repo_root)
         summary = _read_json(summary_path)
-
-        context.set_phase("drain")
-        workload = profile["workload"]
-        drain = _wait_for_drain(api, inspector, source_urls, started_at,
-                                workload["completion_timeout_seconds"], workload["polling_interval_seconds"])
         finished_at = _now()
-        final_queues = inspector.snapshot(dlq_urls)
-
-        context.set_phase("metrics")
-        metrics = metric_collector.collect(started_at, finished_at)
-        (result_dir / "aws-metrics.json").write_text(json.dumps(metrics, indent=2, default=str) + "\n", encoding="utf-8")
 
         context.set_phase("report")
-        acceptance = evaluate(
-            profile, summary, drain, final_queues, metrics,
-            k6_exit_code == K6_THRESHOLD_FAILURE_EXIT_CODE,
-        )
-        diagnostics = _collect_run_diagnostics(api, suite_id, started_at, finished_at)
+        workload = scenario["workload"]
         threshold_failed = k6_exit_code == K6_THRESHOLD_FAILURE_EXIT_CODE
-        identity = result_identity(execution_plan.to_dict())
+        acceptance = evaluate(scenario, summary, k6_threshold_failed=threshold_failed)
+        diagnostics = _collect_run_diagnostics(api, suite_id, started_at, finished_at)
+        identity = result_identity(plan)
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
             "run_id": run_id,
             "started_at": _iso(started_at),
             "finished_at": _iso(finished_at),
-            "revisions": revisions,
-            "infrastructure_capacity": infrastructure_capacity,
             **identity,
-            "experiment": {
-                "work_items_concurrency": worker_capacity["work_items_concurrency"],
-                "concurrent_test_runs": workload["concurrent_test_runs"],
-                "ecs_task_count": worker_capacity["desired_count"],
+            "connection": connection,
+            "dataset": {
+                "id": dataset["id"],
+                "test_case_count": test_case_count,
+                "suite_id": suite_id,
             },
-            "dataset": {"id": dataset["id"], "test_case_count": test_case_count,
-                        "suite_id": suite_id},
-            "profile": profile,
+            "workload": workload,
+            "tuple": {
+                "concurrent_test_runs": workload["concurrent_test_runs"],
+                "test_case_count": test_case_count,
+            },
             "k6": {
                 "exit_code": k6_exit_code,
                 "thresholds": "FAIL" if threshold_failed else "PASS",
@@ -323,42 +302,29 @@ def execute(args: argparse.Namespace) -> int:
             },
             "test_run_diagnostics": diagnostics,
             "preflight": preflight,
-            "drain": drain,
-            "final_dlq": final_queues,
-            "aws_metrics": metrics,
             "acceptance": acceptance,
         }
         report_text = render_report(result)
         (result_dir / "result.json").write_text(json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8")
         (result_dir / "report.md").write_text(report_text, encoding="utf-8")
 
-        context.set_phase("upload")
-        bucket = os.environ.get("PERFORMANCE_RESULTS_BUCKET")
-        if bucket:
-            try:
-                upload_result_directory(result_dir, bucket, run_id)
-            except ResultUploadError as exc:
-                raise RunnerError("Performance 결과 S3 보존에 실패했습니다. 로컬 결과는 유지됩니다.") from exc
-        else:
-            print("PERFORMANCE_RESULTS_BUCKET이 없어 S3 결과 업로드를 건너뜁니다.", file=sys.stderr)
         print(f"{acceptance['status']}: {result_dir}")
         return 0 if acceptance["status"] == "PASS" else 1
     except Exception as exc:
         if not context.dry_run:
-            preserve_failure(
-                context,
-                exc,
-                bucket=os.environ.get("PERFORMANCE_RESULTS_BUCKET"),
-                upload_failure_fn=upload_failure_directory,
-            )
+            preserve_failure(context, exc)
         raise
 
 
 def parser() -> argparse.ArgumentParser:
-    command = argparse.ArgumentParser(description="Run a repeatable GuardBench performance experiment.")
-    command.add_argument("--experiment", required=True,
-                         help="Experiment manifest v1 with expected capacity and Profile/Dataset references.")
-    command.add_argument("--result-dir")
+    command = argparse.ArgumentParser(description="Run a GuardBench performance scenario.")
+    command.add_argument("--api-url", required=True, help="GuardBench API base URL.")
+    command.add_argument("--target-url", required=True, help="Application Target HTTP endpoint URL.")
+    command.add_argument("--target-model", required=True, help="Application Target model identifier.")
+    command.add_argument("--target-revision", default="", help="Optional Application Target revision.")
+    command.add_argument("--scenario", required=True, help="Scenario YAML file path.")
+    command.add_argument("--dataset", required=True, help="Dataset YAML file path.")
+    command.add_argument("--result-dir", help="Local directory to write artifacts into.")
     command.add_argument("--dry-run", action="store_true", help="Validate inputs and print the execution plan.")
     return command
 
