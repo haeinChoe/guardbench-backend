@@ -30,7 +30,7 @@
 
 [ADR 0016](0016-performance-experiment-plan.md)은 인프라 구성 × 시나리오 실행 계획의 APPROVED/ACCEPTED 계약이다. 인프라 capacity와 Profile의 workload 소유권은 기존 계약을 유지한다.
 
-[ADR 0017](0017-performance-runner-infrastructure-boundary.md)(DRAFT/PROPOSED)은 Backend Runner와 인프라의 경계, Runner 입력·결과 계약을 정한다. 승인되면 ADR 0016의 인프라 관련 범위를 대체한다.
+[ADR 0017](0017-performance-runner-infrastructure-boundary.md)은 Backend Runner와 인프라의 경계, Runner 입력·결과 계약을 정하는 APPROVED/ACCEPTED 계약이다. ADR 0016의 인프라 관련 범위를 대체한다.
 
 ## 비동기 TestRun 계약 맵
 

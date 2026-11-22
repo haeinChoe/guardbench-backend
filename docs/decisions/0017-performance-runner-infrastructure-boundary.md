@@ -1,13 +1,12 @@
 # 0017. 성능 Runner와 인프라의 경계
 
-> Status: DRAFT
+> Status: APPROVED
 > Owner: Backend
 > Last reviewed: 2026-11-22
 > Canonical source: GitHub
 > Origin: GitHub Issue #37
-> AI assistance: 이 문서의 초안은 LLM의 도움으로 작성되었으며 사람의 검토가 필요합니다.
 
-- ADR Status: PROPOSED
+- ADR Status: ACCEPTED
 - Decision date: 2026-11-22
 - Related Issue: #37; 인프라 측 결정 haeinChoe/guardbench-iac#12
 
