@@ -1,4 +1,4 @@
-"""Profile and Dataset loading with strict, environment-driven configuration."""
+"""Scenario, dataset, and connection input loading with strict validation."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import yaml
 
 
 class ConfigurationError(ValueError):
-    """Raised when a profile or dataset cannot be safely executed."""
+    """Raised when a scenario, dataset, or connection input cannot be safely executed."""
 
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)(?::-([^}]*))?}")
@@ -80,50 +80,112 @@ def _integer(value: Any, path: str, *, minimum: int = 0) -> int:
     return value
 
 
-def validate_profile(profile: dict[str, Any]) -> None:
-    _object(profile, "profile", required=("test", "workload", "target", "acceptance"))
-    test = profile.get("test")
-    workload = profile.get("workload")
-    target = profile.get("target")
-    acceptance = profile.get("acceptance")
+def validate_http_url(value: Any, path: str, *, allow_query: bool = True) -> str:
+    """Validate an HTTP or HTTPS URL without credentials or fragments."""
+    cleaned = _string(value, path).strip()
+    try:
+        parsed = urlparse(cleaned)
+        _ = parsed.port
+    except ValueError as exc:
+        raise ConfigurationError(f"{path} URL이 올바르지 않습니다.") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
+        raise ConfigurationError(f"{path}는 userinfo와 fragment가 없는 HTTP/HTTPS URL이어야 합니다.")
+    if not allow_query and parsed.query:
+        raise ConfigurationError(f"{path} URL에는 query string을 포함할 수 없습니다.")
+    return cleaned
+
+
+def validate_connection(
+    *,
+    api_url: Any,
+    target_url: Any,
+    target_model: Any,
+    target_revision: Any = None,
+    target_type: str = "HTTP_ENDPOINT",
+) -> dict[str, Any]:
+    """Validate CLI-provided API and Target connection inputs."""
+    normalized_api_url = validate_http_url(api_url, "connection.api_url", allow_query=False).rstrip("/")
+    normalized_target_url = validate_http_url(target_url, "connection.target.url", allow_query=True)
+    model = _string(target_model, "connection.target.model").strip()
+    if target_revision is None or target_revision == "":
+        revision: str | None = None
+    else:
+        revision = _string(target_revision, "connection.target.revision").strip()
+    return {
+        "api_url": normalized_api_url,
+        "target": {
+            "type": target_type,
+            "url": normalized_target_url,
+            "model": model,
+            "revision": revision,
+        },
+    }
+
+
+def validate_scenario(scenario: dict[str, Any]) -> None:
+    """Validate scenario test type, workload, target type, and app-level acceptance criteria."""
+    _object(scenario, "scenario", required=("test", "workload", "target", "acceptance"))
+    test = scenario.get("test")
+    workload = scenario.get("workload")
+    target = scenario.get("target")
+    acceptance = scenario.get("acceptance")
     _object(test, "test", required=("id", "name", "type"))
     _string(test["id"], "test.id")
     _string(test["name"], "test.name")
     _string(test["type"], "test.type")
     if test.get("type") not in {"SMOKE", "STRESS", "SOAK"}:
         raise ConfigurationError("test.type은 SMOKE, STRESS, SOAK 중 하나여야 합니다.")
-    _object(workload, "workload", required=("concurrent_test_runs", "ramp_up_seconds", "duration_seconds",
-            "completion_timeout_seconds", "polling_interval_seconds"), optional=("max_iterations_per_vu",))
+    _object(
+        workload,
+        "workload",
+        required=("concurrent_test_runs", "completion_timeout_seconds", "polling_interval_seconds"),
+        optional=("max_iterations_per_vu", "stages", "ramp_up_seconds", "duration_seconds"),
+    )
     _integer(workload["concurrent_test_runs"], "workload.concurrent_test_runs", minimum=1)
-    _number(workload["ramp_up_seconds"], "workload.ramp_up_seconds")
-    _number(workload["duration_seconds"], "workload.duration_seconds", minimum=1)
+    if "stages" in workload:
+        if "ramp_up_seconds" in workload or "duration_seconds" in workload:
+            raise ConfigurationError("workload.stages는 ramp_up_seconds/duration_seconds와 혼용할 수 없습니다.")
+        stages = workload["stages"]
+        if not isinstance(stages, list) or not stages:
+            raise ConfigurationError("workload.stages는 비어 있지 않은 배열이어야 합니다.")
+        targets = []
+        for index, stage in enumerate(stages):
+            path = f"workload.stages[{index}]"
+            _object(stage, path, required=("duration_seconds", "concurrent_test_runs"))
+            duration = _number(stage["duration_seconds"], f"{path}.duration_seconds")
+            if duration <= 0:
+                raise ConfigurationError(f"{path}.duration_seconds는 양수여야 합니다.")
+            targets.append(_integer(stage["concurrent_test_runs"], f"{path}.concurrent_test_runs"))
+        if max(targets) != workload["concurrent_test_runs"]:
+            raise ConfigurationError("workload.concurrent_test_runs는 stages의 최대 양수 target과 같아야 합니다.")
+    else:
+        for field in ("ramp_up_seconds", "duration_seconds"):
+            if field not in workload:
+                raise ConfigurationError(f"workload.{field}는 필수입니다.")
+        _number(workload["ramp_up_seconds"], "workload.ramp_up_seconds")
+        _number(workload["duration_seconds"], "workload.duration_seconds", minimum=1)
     _number(workload["completion_timeout_seconds"], "workload.completion_timeout_seconds", minimum=1)
     _number(workload["polling_interval_seconds"], "workload.polling_interval_seconds", minimum=0.1)
     if "max_iterations_per_vu" in workload:
         _integer(workload["max_iterations_per_vu"], "workload.max_iterations_per_vu")
 
-    _object(target, "target", required=("type", "identifier", "model"), optional=("revision",))
+    _object(target, "target", required=("type",))
     if target.get("type") != "HTTP_ENDPOINT":
         raise ConfigurationError("target.type은 HTTP_ENDPOINT여야 합니다.")
-    for field in ("identifier", "model"):
-        _string(target.get(field), f"target.{field}")
-    if "revision" in target and not isinstance(target["revision"], str):
-        raise ConfigurationError("target.revision은 문자열이어야 합니다.")
-    try:
-        parsed_target = urlparse(target["identifier"])
-    except ValueError as exc:
-        raise ConfigurationError("target.identifier URL이 올바르지 않습니다.") from exc
-    if parsed_target.scheme not in {"http", "https"} or not parsed_target.netloc \
-            or parsed_target.username or parsed_target.password or parsed_target.fragment:
-        raise ConfigurationError("target.identifier는 userinfo와 fragment가 없는 HTTP/HTTPS URL이어야 합니다.")
 
     _object(acceptance, "acceptance", required=("api", "completion"))
     api = _object(acceptance["api"], "acceptance.api", required=("create_latency_ms", "error_rate"))
-    _object(api["create_latency_ms"], "acceptance.api.create_latency_ms", required=("p50", "p95", "p99"))
-    completion = _object(acceptance["completion"], "acceptance.completion",
-                         required=("max_seconds", "failure_rate", "queue_drain_seconds", "dlq_messages"))
+    latency = _object(api["create_latency_ms"], "acceptance.api.create_latency_ms", required=("p50", "p95", "p99"))
+    completion = _object(acceptance["completion"], "acceptance.completion", required=("max_seconds", "failure_rate"))
     for field in ("p50", "p95", "p99"):
-        _number(api.get("create_latency_ms", {}).get(field), f"acceptance.api.create_latency_ms.{field}", minimum=0.001)
+        _number(latency.get(field), f"acceptance.api.create_latency_ms.{field}", minimum=0.001)
     _number(api.get("error_rate"), "acceptance.api.error_rate")
     if api["error_rate"] > 1:
         raise ConfigurationError("acceptance.api.error_rate는 0과 1 사이여야 합니다.")
@@ -131,20 +193,6 @@ def validate_profile(profile: dict[str, Any]) -> None:
     _number(completion.get("failure_rate"), "acceptance.completion.failure_rate")
     if completion["failure_rate"] > 1:
         raise ConfigurationError("acceptance.completion.failure_rate는 0과 1 사이여야 합니다.")
-    _number(completion.get("queue_drain_seconds"), "acceptance.completion.queue_drain_seconds", minimum=0.001)
-    _number(completion.get("dlq_messages"), "acceptance.completion.dlq_messages")
-
-
-def load_profile(path: Path) -> dict[str, Any]:
-    profile = load_yaml(path)
-    validate_profile(profile)
-    return profile
-
-
-def load_dataset(path: Path) -> dict[str, Any]:
-    dataset = load_yaml(path)
-    validate_dataset(dataset)
-    return dataset
 
 
 def validate_dataset(dataset: dict[str, Any]) -> None:

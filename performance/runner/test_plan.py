@@ -1,4 +1,4 @@
-"""Experiment input resolution, snapshot provenance and no-call CLI boundaries."""
+"""Input resolution, URL/scenario validation, provenance, and dry-run CLI tests."""
 
 import hashlib
 import io
@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 import unittest
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,114 +27,70 @@ class ExecutionPlanTest(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.directory = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         shutil.copytree(FIXTURES, self.directory / "fixtures")
-        self.manifest_path = self.directory / "fixtures/experiments/smoke.yaml"
-        self.profile_path = self.directory / "fixtures/profiles/smoke.yaml"
+        self.scenario_path = self.directory / "fixtures/profiles/smoke.yaml"
         self.dataset_path = self.directory / "fixtures/datasets/two-cases.yaml"
-        self.manifest = yaml.safe_load(self.manifest_path.read_text())
-        self.profile = yaml.safe_load(self.profile_path.read_text())
+        self.scenario = yaml.safe_load(self.scenario_path.read_text(encoding="utf-8"))
+        self.base_connection = {
+            "api_url": "https://api.example.test",
+            "target_url": "https://target.example.test/v1/chat/completions",
+            "target_model": "fixture-model",
+            "target_revision": "fixture-v1",
+        }
 
-    def write_manifest(self):
-        self.manifest_path.write_text(yaml.safe_dump(self.manifest))
+    def _load(self, **overrides):
+        params = {
+            **self.base_connection,
+            "scenario_path": self.scenario_path,
+            "dataset_path": self.dataset_path,
+        }
+        params.update(overrides)
+        return load_execution_plan(**params)
 
-    def test_source_relative_resolution_original_hashes_and_full_plan(self):
+    def test_resolution_raw_hashes_and_full_plan_shape(self):
         with patch.dict(os.environ, {}, clear=True):
-            resolved = load_execution_plan(self.manifest_path)
+            resolved = self._load(
+                api_url="https://api.example.test/",
+                target_revision="",
+            )
         plan = resolved.to_dict()
-        self.assertEqual({"schema_version", "experiment", "infrastructure", "profile", "dataset", "sources"}, set(plan))
-        self.assertEqual({"id": "fixture-smoke"}, plan["experiment"])
-        self.assertEqual("fixture-v1", plan["infrastructure"]["revision"])
-        self.assertEqual(self.profile, plan["profile"])
+        self.assertEqual({"schema_version", "connection", "scenario", "dataset", "sources"}, set(plan))
+        self.assertEqual(1, plan["schema_version"])
+        self.assertEqual(
+            {
+                "api_url": "https://api.example.test",
+                "target": {
+                    "type": "HTTP_ENDPOINT",
+                    "url": "https://target.example.test/v1/chat/completions",
+                    "model": "fixture-model",
+                    "revision": None,
+                },
+            },
+            plan["connection"],
+        )
+        self.assertEqual(self.scenario, plan["scenario"])
         self.assertEqual({"id": "fixture-two-cases-v1", "test_case_count": 2}, plan["dataset"])
         self.assertEqual(2, len(resolved.seed_payload["testCases"]))
-        for name, path in (("experiment", self.manifest_path), ("profile", self.profile_path), ("dataset", self.dataset_path)):
+        for name, path in (("scenario", self.scenario_path), ("dataset", self.dataset_path)):
             self.assertEqual(str(path.resolve()), plan["sources"][name]["path"])
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), plan["sources"][name]["sha256"])
-        self.assertNotIn("infrastructure", plan["profile"])
 
     def test_snapshots_survive_file_environment_and_returned_object_mutation(self):
-        self.profile["target"]["model"] = "${FIXTURE_MODEL}"
-        self.profile_path.write_text(yaml.safe_dump(self.profile))
-        with patch.dict(os.environ, {"FIXTURE_MODEL": "resolved-model"}):
-            resolved = load_execution_plan(self.manifest_path)
+        self.scenario["test"]["name"] = "${FIXTURE_TEST_NAME}"
+        self.scenario_path.write_text(yaml.safe_dump(self.scenario), encoding="utf-8")
+        with patch.dict(os.environ, {"FIXTURE_TEST_NAME": "resolved-name"}, clear=True):
+            resolved = self._load()
         original = resolved.to_dict()
-        resolved.profile["target"]["model"] = "mutation"
+        resolved.scenario["test"]["name"] = "mutation"
+        resolved.connection["target"]["model"] = "mutation"
         resolved.dataset["id"] = "mutation"
         resolved.seed_payload["testCases"].clear()
-        resolved.to_dict()["infrastructure"].clear()
         resolved.source_bytes.clear()
-        for path in (self.manifest_path, self.profile_path, self.dataset_path):
+        for path in (self.scenario_path, self.dataset_path):
             path.unlink()
         self.assertEqual(original, resolved.to_dict())
-        self.assertEqual("resolved-model", resolved.profile["target"]["model"])
+        self.assertEqual("resolved-name", resolved.scenario["test"]["name"])
+        self.assertEqual("fixture-model", resolved.connection["target"]["model"])
         self.assertEqual(2, len(resolved.seed_payload["testCases"]))
-
-    def test_cpu_memory_normalization_optional_api_and_aws_mode(self):
-        expected = self.manifest["infrastructure"]["expected"]
-        worker = expected["ecs"]["worker"]
-        worker.update(task_cpu=256, task_memory="00512")
-        expected["ecs"]["api"] = {key: value for key, value in worker.items() if key != "work_items_concurrency"}
-        self.write_manifest()
-        plan = load_execution_plan(self.manifest_path).to_dict()
-        for role in ("api", "worker"):
-            self.assertEqual("256", plan["infrastructure"]["expected"]["ecs"][role]["task_cpu"])
-            self.assertEqual("512", plan["infrastructure"]["expected"]["ecs"][role]["task_memory"])
-
-    def test_missing_unknown_and_wrong_nested_manifest_values_are_rejected(self):
-        mutations = [
-            (("schema_version",), None), (("schema_version",), True), (("schema_version",), 2),
-            (("id",), ""), (("id",), []), (("mode",), "synthetic"), (("mode",), "aws"),
-            (("profile",), ""), (("infrastructure",), []),
-            (("infrastructure", "revision"), ""),
-            (("infrastructure", "expected", "ecs"), []),
-            (("infrastructure", "expected", "ecs", "worker"), []),
-            (("infrastructure", "expected", "ecs", "api"), {}),
-            (("infrastructure", "expected", "rds"), None),
-            (("infrastructure", "expected", "sagemaker"), None),
-        ]
-        for keys, value in mutations:
-            with self.subTest(keys=keys, value=value):
-                self.manifest = yaml.safe_load((FIXTURES / "experiments/smoke.yaml").read_text())
-                target = self.manifest
-                for key in keys[:-1]:
-                    target = target[key]
-                target[keys[-1]] = value
-                self.write_manifest()
-                with self.assertRaises(ConfigurationError):
-                    load_execution_plan(self.manifest_path)
-        for keys in ((), ("infrastructure",), ("infrastructure", "expected"),
-                     ("infrastructure", "expected", "ecs"), ("infrastructure", "expected", "ecs", "worker"),
-                     ("infrastructure", "expected", "rds"), ("infrastructure", "expected", "sagemaker")):
-            with self.subTest(unknown_at=keys):
-                self.manifest = yaml.safe_load((FIXTURES / "experiments/smoke.yaml").read_text())
-                target = self.manifest
-                for key in keys:
-                    target = target[key]
-                target["unknown"] = "unsupported"
-                self.write_manifest()
-                with self.assertRaisesRegex(ConfigurationError, "unknown"):
-                    load_execution_plan(self.manifest_path)
-
-    def test_every_required_manifest_field_is_required(self):
-        original = yaml.safe_load(self.manifest_path.read_text())
-        required_paths = []
-
-        def collect(value, keys=()):
-            for key, child in value.items():
-                required_paths.append(keys + (key,))
-                if isinstance(child, dict):
-                    collect(child, keys + (key,))
-
-        collect(original)
-        for keys in required_paths:
-            with self.subTest(missing=keys):
-                self.manifest = json.loads(json.dumps(original))
-                target = self.manifest
-                for key in keys[:-1]:
-                    target = target[key]
-                del target[keys[-1]]
-                self.write_manifest()
-                with self.assertRaises(ConfigurationError):
-                    load_execution_plan(self.manifest_path)
 
     def test_each_yaml_source_is_read_once(self):
         read_bytes = Path.read_bytes
@@ -145,66 +101,81 @@ class ExecutionPlanTest(unittest.TestCase):
             return read_bytes(path)
 
         with patch.object(Path, "read_bytes", capture):
-            load_execution_plan(self.manifest_path)
-        self.assertCountEqual([self.manifest_path, self.profile_path, self.dataset_path], reads)
+            self._load()
+        self.assertCountEqual([self.scenario_path, self.dataset_path], reads)
 
     def test_invalid_yaml_encoding_and_top_level_type_are_configuration_errors(self):
-        for source in (b"\xff", b"[invalid", b"[one, two]", b"null"):
-            with self.subTest(source=source):
-                self.manifest_path.write_bytes(source)
-                with self.assertRaises(ConfigurationError):
-                    load_execution_plan(self.manifest_path)
+        for path in (self.scenario_path, self.dataset_path):
+            for source in (b"\xff", b"[invalid", b"[one, two]", b"null"):
+                with self.subTest(path=path.name, source=source):
+                    original = path.read_bytes()
+                    try:
+                        path.write_bytes(source)
+                        with self.assertRaises(ConfigurationError):
+                            self._load()
+                    finally:
+                        path.write_bytes(original)
 
-    def test_capacity_numbers_are_strict_positive_and_finite(self):
-        worker = self.manifest["infrastructure"]["expected"]["ecs"]["worker"]
-        for field in ("desired_count", "work_items_concurrency", "task_cpu", "task_memory"):
-            original = worker[field]
-            for value in (True, 0, -1, 1.5, float("nan"), float("inf"), float("-inf"), [], {}):
-                with self.subTest(field=field, value=value):
-                    worker[field] = value
-                    self.write_manifest()
-                    with self.assertRaises(ConfigurationError):
-                        load_execution_plan(self.manifest_path)
-            worker[field] = original
+    def test_connection_inputs_are_strictly_validated(self):
+        invalid_overrides = [
+            {"api_url": ""},
+            {"api_url": "ftp://api.example.test"},
+            {"api_url": "https://user:secret@api.example.test"},
+            {"api_url": "https://api.example.test#frag"},
+            {"api_url": "https://api.example.test?query=1"},
+            {"api_url": "http://[invalid"},
+            {"api_url": "https://api.example.test:badport"},
+            {"target_url": ""},
+            {"target_url": "ftp://target.example.test/v1"},
+            {"target_url": "https://alice:pw@target.example.test/v1"},
+            {"target_url": "https://target.example.test/v1#frag"},
+            {"target_url": "http://[invalid"},
+            {"target_model": ""},
+            {"target_model": "${UNRESOLVED_MODEL}"},
+            {"target_revision": "   "},
+            {"target_revision": "${UNRESOLVED_REV}"},
+        ]
+        for override in invalid_overrides:
+            with self.subTest(override=override), self.assertRaises(ConfigurationError):
+                self._load(**override)
 
-    def test_missing_files_and_unresolved_references_are_configuration_errors(self):
-        for field in ("profile", "dataset"):
-            original = self.manifest[field]
-            for value in ("missing.yaml", "${MISSING_FIXTURE_PATH}"):
-                with self.subTest(field=field, value=value), patch.dict(os.environ, {}, clear=True):
-                    self.manifest[field] = value
-                    self.write_manifest()
-                    with self.assertRaises(ConfigurationError):
-                        load_execution_plan(self.manifest_path)
-            self.manifest[field] = original
-        with self.assertRaises(ConfigurationError):
-            load_execution_plan(self.directory / "missing.yaml")
+        resolved = self._load(target_url="https://target.example.test/v1/chat/completions?version=1")
+        self.assertEqual(
+            "https://target.example.test/v1/chat/completions?version=1",
+            resolved.connection["target"]["url"],
+        )
 
-    def test_profile_accepts_only_adr_0016_test_types(self):
+    def test_scenario_accepts_only_smoke_stress_soak_test_types(self):
         for test_type in ("SMOKE", "STRESS", "SOAK"):
             with self.subTest(test_type=test_type), patch.dict(os.environ, {}, clear=True):
-                profile = json.loads(json.dumps(self.profile))
-                profile["test"]["type"] = test_type
-                self.profile_path.write_text(yaml.safe_dump(profile))
-                self.assertEqual(test_type, load_execution_plan(self.manifest_path).profile["test"]["type"])
-        for test_type in ("LOAD", "PEAK", "smoke"):
+                scenario = json.loads(json.dumps(self.scenario))
+                scenario["test"]["type"] = test_type
+                self.scenario_path.write_text(yaml.safe_dump(scenario), encoding="utf-8")
+                self.assertEqual(test_type, self._load().scenario["test"]["type"])
+        for test_type in ("SPIKE", "PEAK", "smoke"):
             with self.subTest(test_type=test_type), patch.dict(os.environ, {}, clear=True):
-                profile = json.loads(json.dumps(self.profile))
-                profile["test"]["type"] = test_type
-                self.profile_path.write_text(yaml.safe_dump(profile))
+                scenario = json.loads(json.dumps(self.scenario))
+                scenario["test"]["type"] = test_type
+                self.scenario_path.write_text(yaml.safe_dump(scenario), encoding="utf-8")
                 with self.assertRaises(ConfigurationError):
-                    load_execution_plan(self.manifest_path)
+                    self._load()
 
-    def test_profile_rejects_nonfinite_wrong_nested_types_unknown_and_unresolved_values(self):
+    def test_scenario_rejects_env_target_fields_infra_acceptance_and_bad_types(self):
         mutations = [
-            (("test", "id"), []), (("test", "type"), []),
-            (("target", "identifier"), []), (("target", "model"), "${MISSING_FIXTURE_MODEL}"),
-            (("target", "identifier"), "https://user:secret@example.test/path"),
-            (("target", "identifier"), "http://[invalid"),
+            (("test", "id"), []),
+            (("test", "type"), []),
+            (("target", "type"), "GRPC"),
+            (("target", "identifier"), "https://target.example.test"),
+            (("target", "url"), "https://target.example.test"),
+            (("target", "model"), "fixture-model"),
+            (("target", "revision"), "fixture-v1"),
+            (("acceptance", "completion", "queue_drain_seconds"), 10),
+            (("acceptance", "completion", "dlq_messages"), 0),
             (("workload", "duration_seconds"), float("nan")),
             (("workload", "polling_interval_seconds"), float("inf")),
             (("workload", "concurrent_test_runs"), True),
-            (("acceptance", "api"), []), (("acceptance", "api", "create_latency_ms"), []),
+            (("acceptance", "api"), []),
+            (("acceptance", "api", "create_latency_ms"), []),
             (("acceptance", "completion"), []),
             (("acceptance", "completion", "max_seconds"), float("inf")),
             (("acceptance", "completion", "failure_rate"), float("nan")),
@@ -214,68 +185,75 @@ class ExecutionPlanTest(unittest.TestCase):
         ]
         for keys, value in mutations:
             with self.subTest(keys=keys), patch.dict(os.environ, {}, clear=True):
-                profile = json.loads(json.dumps(self.profile))
-                target = profile
+                scenario = json.loads(json.dumps(self.scenario))
+                target = scenario
                 for key in keys[:-1]:
                     target = target[key]
                 target[keys[-1]] = value
-                self.profile_path.write_text(yaml.safe_dump(profile))
+                self.scenario_path.write_text(yaml.safe_dump(scenario), encoding="utf-8")
                 with self.assertRaises(ConfigurationError):
-                    load_execution_plan(self.manifest_path)
+                    self._load()
 
     def test_http_dataset_source_is_verified_and_snapshot_is_retained(self):
         source = self.directory / "fixtures/datasets/source.http"
         payload = {"name": "fixture", "testCases": [{"name": "one"}]}
-        source.write_text("POST /seed\n\n" + json.dumps(payload))
-        dataset = {"id": "fixture-http", "immutable": True, "source": {
-            "type": "http-testset", "path": "source.http", "expected_test_case_count": 1,
-            "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}}
-        self.dataset_path.write_text(yaml.safe_dump(dataset))
-        resolved = load_execution_plan(self.manifest_path)
-        source.write_text("changed")
+        source.write_text("POST /seed\n\n" + json.dumps(payload), encoding="utf-8")
+        dataset = {
+            "id": "fixture-http",
+            "immutable": True,
+            "source": {
+                "type": "http-testset",
+                "path": "source.http",
+                "expected_test_case_count": 1,
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            },
+        }
+        self.dataset_path.write_text(yaml.safe_dump(dataset), encoding="utf-8")
+        resolved = self._load()
+        source.write_text("changed", encoding="utf-8")
         self.assertEqual(payload, resolved.seed_payload)
         with self.assertRaisesRegex(ConfigurationError, "checksum"):
-            load_execution_plan(self.manifest_path)
+            self._load()
 
-    def test_manifest_dry_run_creates_plan_and_never_calls_external_interfaces(self):
-        args = cli.parser().parse_args(["--experiment", str(self.manifest_path), "--dry-run",
-                                       "--result-dir", str(self.directory / "result")])
+    def test_dry_run_creates_plan_and_never_calls_external_interfaces(self):
+        result = self.directory / "result"
+        args = cli.parser().parse_args([
+            "--api-url", "https://api.example.test",
+            "--target-url", "https://target.example.test/v1/chat/completions",
+            "--target-model", "fixture-model",
+            "--scenario", str(self.scenario_path),
+            "--dataset", str(self.dataset_path),
+            "--dry-run",
+            "--result-dir", str(result),
+        ])
         with ExitStack() as stack:
             stack.enter_context(patch.dict(os.environ, {}, clear=True))
-            for name in ("ApiClient", "QueueInspector", "CloudWatchMetricCollector", "InfrastructureCapacityCollector",
-                         "run_k6", "queue_urls_from_environment", "upload_result_directory"):
+            for name in ("ApiClient", "run_k6"):
                 stack.enter_context(patch.object(cli, name, side_effect=AssertionError(f"unexpected {name}")))
             stack.enter_context(patch.object(cli.subprocess, "run", side_effect=AssertionError("unexpected process")))
             output = stack.enter_context(redirect_stdout(io.StringIO()))
             self.assertEqual(0, cli.execute(args))
-        result = self.directory / "result"
         self.assertEqual(json.loads(output.getvalue()), json.loads((result / "execution-plan.json").read_text()))
-        self.assertFalse((result / "result.json").exists())
-        for name, source in (("experiment", self.manifest_path), ("profile", self.profile_path), ("dataset", self.dataset_path)):
+        self.assertEqual(
+            {"scenario.yaml", "dataset.yaml", "execution-plan.json"},
+            {path.name for path in result.iterdir()},
+        )
+        for name, source in (("scenario", self.scenario_path), ("dataset", self.dataset_path)):
             self.assertEqual(source.read_bytes(), (result / f"{name}.yaml").read_bytes())
 
-    def test_explicit_legacy_inputs_cannot_be_combined_with_experiment(self):
-        for option, path in (("--profile", self.profile_path), ("--dataset", self.dataset_path)):
-            args = cli.parser().parse_args(["--experiment", str(self.manifest_path), option, str(path), "--dry-run"])
-            with self.assertRaisesRegex(ConfigurationError, "함께"):
-                cli.execute(args)
-
-    def test_experiment_actual_run_is_staged_until_capacity_preflight_integration(self):
-        args = cli.parser().parse_args(["--experiment", str(self.manifest_path)])
-        with patch.object(cli, "ApiClient", side_effect=AssertionError("unexpected API")):
-            with self.assertRaisesRegex(ConfigurationError, "capacity preflight"):
-                cli.execute(args)
-
-    def test_legacy_explicit_and_default_dry_run_consumers_remain_supported(self):
-        for explicit in (False, True):
-            result = self.directory / f"legacy-{explicit}"
-            options = ["--dry-run", "--result-dir", str(result)]
-            if explicit:
-                options += ["--profile", str(self.profile_path), "--dataset", str(self.dataset_path)]
-            with patch.dict(os.environ, {"PERF_TARGET_URL": "https://example.test", "PERF_TARGET_MODEL": "fixture"}, clear=True), redirect_stdout(io.StringIO()):
-                self.assertEqual(0, cli.execute(cli.parser().parse_args(options)))
-            plan = json.loads((result / "dry-run.json").read_text())
-            self.assertEqual(2 if explicit else 78, plan["test_case_count"])
+    def test_required_cli_options_are_enforced(self):
+        full = [
+            "--api-url", "https://api.example.test",
+            "--target-url", "https://target.example.test/v1",
+            "--target-model", "m",
+            "--scenario", str(self.scenario_path),
+            "--dataset", str(self.dataset_path),
+        ]
+        for omit in ("--api-url", "--target-url", "--target-model", "--scenario", "--dataset"):
+            idx = full.index(omit)
+            partial = full[:idx] + full[idx + 2:]
+            with self.subTest(missing=omit), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                cli.parser().parse_args(partial)
 
 
 if __name__ == "__main__":
