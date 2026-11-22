@@ -45,6 +45,7 @@
 | 통합 | [HTTP Endpoint Application Target Adapter](integrations/http-endpoint-target.md) | APPROVED | Backend | 2026-09-01 | 없음 |
 | 결정 | [ADR 안내](decisions/README.md) | APPROVED | Team | 2026-09-04 | 없음 |
 | 성능 실험 | [ADR 0016: 실행 계획](decisions/0016-performance-experiment-plan.md) | APPROVED | Backend | 2026-11-21 | GitHub Issue #20 |
+| 성능 Runner 경계 | [ADR 0017: Runner와 인프라 경계](decisions/0017-performance-runner-infrastructure-boundary.md) | DRAFT | Backend | 2026-11-22 | GitHub Issue #37 |
 | 결정 | [ADR 0001: 도메인 타입 소유권과 Aggregate 경계](decisions/0001-domain-type-ownership-and-aggregate-boundaries.md) | APPROVED | Backend | 2026-08-24 | 없음 |
 | 결정 | [ADR 0002: PostgreSQL 영속성 계약과 물리 ERD](decisions/0002-postgresql-persistence-contract.md) | APPROVED | Backend | 2026-09-04 | 없음 |
 | 결정 | [ADR 0003: 실행·평가 결과 Aggregate와 write-side Port 경계](decisions/0003-result-aggregate-and-write-port-boundaries.md) | APPROVED | Backend | 2026-08-24 | 없음 |
