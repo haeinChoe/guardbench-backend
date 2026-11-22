@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import io
-import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from pathlib import Path
 from unittest.mock import patch
 
 from performance.runner import local_e2e
@@ -23,7 +21,7 @@ class LocalE2EHarnessTest(unittest.TestCase):
     def test_server_and_temp_dir_clean_up_on_scenario_failure(self):
         captured: dict[str, object] = {}
 
-        def failing_scenario(manifest_path, expected, result_dir):
+        def failing_scenario(scenario_path, dataset_path, result_dir):
             with local_e2e.LocalMockApiServer() as server:
                 captured["server"] = server
                 captured["result_dir"] = result_dir
@@ -31,7 +29,12 @@ class LocalE2EHarnessTest(unittest.TestCase):
                 self.assertTrue(server.is_running)
                 raise RuntimeError("simulated harness failure")
 
-        outcome = local_e2e._execute_scenario("failure_cleanup", failing_scenario, local_e2e.DEFAULT_MANIFEST, {})
+        outcome = local_e2e._execute_scenario(
+            "failure_cleanup",
+            failing_scenario,
+            local_e2e.DEFAULT_SCENARIO,
+            local_e2e.DEFAULT_DATASET,
+        )
         self.assertFalse(outcome.passed)
         self.assertIn("simulated harness failure", outcome.detail)
         self.assertFalse(captured["server"].is_running)
@@ -46,7 +49,7 @@ class LocalE2EHarnessTest(unittest.TestCase):
 
         output = stdout.getvalue()
         self.assertEqual(0, exit_code, output + stderr.getvalue())
-        self.assertEqual(["normal_completion", "capacity_mismatch", "mid_run_failure"], [o.name for o in outcomes])
+        self.assertEqual(["normal_completion", "measurement_fail", "execution_error"], [o.name for o in outcomes])
         for outcome in outcomes:
             self.assertTrue(outcome.passed, outcome.detail)
             self.assertFalse(outcome.work_dir.exists(), f"temporary directory lingered: {outcome.work_dir}")
@@ -55,7 +58,7 @@ class LocalE2EHarnessTest(unittest.TestCase):
         for expected_line in (
             "실제 실행 구성 요소",
             "테스트 대역 범위",
-            "실제 AWS 인프라 또는 성능 Baseline 검증이 아닙니다",
+            "실제 성능 Baseline 검증이 아닙니다",
             "Summary: 3/3 scenarios passed",
         ):
             self.assertIn(expected_line, output)
