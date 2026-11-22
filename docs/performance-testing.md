@@ -137,3 +137,5 @@ Internal ALB 뒤에 있는 대상 API/Target을 호출하는 환경에서는 Wor
 python3 -m performance.runner.local_e2e
 python3 -m unittest discover -s performance -p 'test_*.py' -t .
 ```
+
+[performance-runner-ci.yml](../.github/workflows/performance-runner-ci.yml)은 `performance/**` 변경 시 CI에서 같은 두 명령을 실행한다.
