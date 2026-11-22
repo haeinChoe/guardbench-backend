@@ -1,135 +1,57 @@
-# 0016. 인프라 구성과 시나리오를 분리한 성능 실험 실행 계획
+# 0016. 성능 실험 테스트 유형, 단계형 workload와 실패 진단 계획
 
 > Status: APPROVED
 > Owner: Backend
-> Last reviewed: 2026-11-21
+> Last reviewed: 2026-11-22
 > Canonical source: GitHub
 > Origin: GitHub Issue #20
 
 - ADR Status: ACCEPTED
 - Decision date: 2026-11-21
-- Related Issue: #20; 구현·검증 #21–#26
-- Amended: 2026-11-21 — 실행 입력을 experiment manifest 하나로 통일(#21 결정 코멘트). 아래 Amendments 참고.
-- Amended: 2026-11-22 — 허용 테스트 유형을 `SMOKE`·`STRESS`·`SOAK`로 축소(#21). 아래 Amendments 참고.
+- Related Issue: #20, #37, #39; 구현·검증 #21–#26
+
+인프라 구성 입력, 실행 전 capacity·queue 확인, 인프라 지표 수집·판정, 결과의 인프라 식별과
+원격 보존 등 인프라 관련 범위는 [ADR 0017](0017-performance-runner-infrastructure-boundary.md)을 따른다.
 
 ## Context
 
-성능 실험은 하나의 인프라 구성을 고정하고 선택한 부하 시나리오를 실행한다.
-인프라 구성 이름은 측정 대상 서비스의 자원 규모를 가리킨다. 인프라 구성과
-부하 시나리오를 분리해 동일한 용량에서 선택한 테스트 유형의 부하 패턴을 비교한다.
-
-현재 실행 조건은 Profile, Dataset과 여러 환경변수에 분산되어 있다. 이 조합을
-실행 전에 검증하고 결과까지 보존할 단일 입력이 필요하다. 인프라 capacity는
-IaC/배포 설정이, workload와 acceptance는 Profile이 소유하는 기존 경계를 유지한다.
-
-현재 Profile은 workload/acceptance/target을 소유한다. 결과 소비처는 `performance-analysis-bundle.yml`, Runner report/storage와 관련 테스트다.
-외부 사용자 API·DB schema·migration·production dependency 변경은 이 범위에 없다.
+성능 실험에서는 부하 시나리오와 Dataset, 연결 입력을 실행 전에 검증하고 재현 가능한
+입력 해시와 앱 수준 결과 및 오류 진단 자료를 남겨야 한다. 외부 사용자 API, DB schema,
+migration, production dependency 변경은 이 범위에 없다.
 
 ## Decision
 
-### 용어와 소유권
+### 단일 실행과 입력 스냅샷
 
-- **인프라 구성**: 예상 사용량을 운영할 ECS·classifier 자원/설정 묶음. 실제 값과 적용은 IaC가 소유한다.
-- **시나리오**: 고정 인프라에 가할 workload와 실행 전에 정한 acceptance. 기존 Profile이 소유한다.
-- **실행 manifest**: 인프라 구성 식별/예상값과 Profile/Dataset 파일을 연결하는 단일 실험 입력.
-- **실행 계획**: manifest와 참조 파일을 검증·해석하여 보존하는 설정 snapshot. 실행 ID와 구분한다.
+- 한 번의 Runner 실행은 하나의 시나리오, 하나의 Dataset, 하나의 API·Target 연결 입력만 다룬다.
+- matrix·병렬 실험, DB reset/TRUNCATE는 포함하지 않는다.
+- 실행 계획(`execution-plan.json`)은 검증된 시나리오, Dataset ID와 TestCase 수, 연결 입력과
+  원본 파일(`scenario.yaml`, `dataset.yaml`) byte의 SHA-256을 남긴다.
+- Runner는 실행 전에 YAML 입력과 Dataset payload를 한 번씩 읽어 스냅샷으로 고정한다.
+  실행 중 원본 파일이나 환경변수가 바뀌어도 고정된 스냅샷으로 seed와 결과를 작성한다.
+- 유한하지 않은 수치(`NaN`, `Infinity`), 잘못된 중첩 타입, 알 수 없는 키, userinfo·fragment를
+  포함한 URL은 `ConfigurationError`로 거절한다.
+- `--dry-run`은 외부 API나 k6를 호출하지 않으며 `--result-dir`에 원본 입력(`scenario.yaml`,
+  `dataset.yaml`)과 `execution-plan.json`만 기록한다.
+- Runner CLI 연결 입력과 인프라 관련 경계는 [ADR 0017](0017-performance-runner-infrastructure-boundary.md)을 따른다.
 
-한 manifest는 한 실험만 가리킨다. matrix/병렬 실험, DB reset/TRUNCATE, queue purge,
-AWS resource 생성/삭제, CodeBuild/Fargate 선택은 포함하지 않는다.
+### 테스트 유형
 
-### 테스트 유형과 프로필 구현 범위
-
-성능 테스트에는 `SMOKE`, `STRESS`, `SOAK` 세 유형을 사용한다. 인프라 구성은
-실행 동안 고정하고 테스트 유형은 해당 인프라에서 확인할 실험 목적을 나타낸다.
+성능 테스트에는 `SMOKE`, `STRESS`, `SOAK` 세 유형을 사용한다.
 
 | 유형 | 목적 |
 | --- | --- |
 | `SMOKE` | 적은 부하로 TestRun 접수부터 비동기 처리·완료·결과 수집까지 실행 경로를 확인한다. |
-| `STRESS` | 부하를 높이면서 처리 한계, 지연, SQS backlog와 실패 양상을 확인한다. |
-| `SOAK` | 일정한 부하를 장시간 유지하며 메모리·연결·backlog·오류 누적을 확인한다. |
+| `STRESS` | 부하를 높이면서 처리 한계, 지연과 실패 양상을 확인한다. |
+| `SOAK` | 일정한 부하를 장시간 유지하며 지연 변화와 오류 누적을 확인한다. |
 
-현재 실제 운영 프로필 파일은 없고 검증 fixture만 `performance/fixtures/profiles/`에 있다. Runner 입력 검증은 위 세 유형만 허용하며
-`LOAD`, `PEAK` 등 다른 `test.type`은 설정 오류로 거부한다. 허용 유형과 해당 프로필의 구현 여부는 구분한다.
+Runner 입력 검증은 위 세 유형만 허용하며 그 밖의 `test.type`은 설정 오류로 거부한다.
+허용 유형의 존재와 개별 시나리오 구현 여부는 구분한다.
 
-이 결정은 사용할 유형과 목적을 정의한다. 각 프로필의 부하 수치·시간·판정 기준,
-단계형 부하의 구체적인 구현은 별도 Issue #23에서 다룬다.
+### 단계형 Workload와 튜플
 
-### 실행 manifest v1
-
-`--experiment <yaml>`이 Runner의 유일한 실행 입력이며 필수다. 파일 참조는 manifest의
-디렉터리를 기준으로 해석한다. `bin/verify-runtime`은 검증 fixture
-manifest의 dry-run으로 image 실행 경로를 확인한다.
-
-```yaml
-schema_version: 1
-id: fixture-smoke
-infrastructure:
-  id: fixture-infra
-  revision: fixture-v1
-  expected:
-    ecs:
-      worker:
-        cluster_identifier: fixture-cluster
-        service_identifier: fixture-worker
-        task_cpu: "256"
-        task_memory: "512"
-        desired_count: 1
-        work_items_concurrency: 2
-      api:  # API capacity도 실험 조건이면 지정한다.
-        cluster_identifier: fixture-cluster
-        service_identifier: fixture-api
-        task_cpu: "256"
-        task_memory: "512"
-        desired_count: 1
-    rds:
-      db_instance_identifier: fixture-db
-      db_instance_class: fixture-db-class
-    sagemaker:
-      endpoint_name: fixture-classifier
-      production_variant_name: AllTraffic
-      instance_type: fixture-instance-type
-      desired_instance_count: 1
-profile: ../profiles/smoke.yaml
-dataset: ../datasets/two-cases.yaml
-```
-
-예시의 값은 검증 fixture이며 실제 인프라 구성값이나 운영 목표가 아니다. 필수 항목은
-schema_version=1, 비어 있지 않은 id/revision, profile/dataset 참조,
-infrastructure.expected.ecs.worker의 위 여섯 필드와 expected.rds/sagemaker다. 기존 측정 계약이
-RDS·SageMaker 관측을 요구하므로 이 자원 입력도 필수로 받는다. expected.ecs.api는
-선택 항목이며 지정하면 예시의 해당 필드를 모두 요구한다. 알려지지 않은 구조/키와
-비정상 숫자(bool, NaN, Infinity, 음수·0 count)를 거절한다. CPU/memory는 양의 정수
-또는 그 문자열을 받아 계획에서는 십진 문자열로 정규화한다. 실험 중 자원 개수를
-0으로 내리는 시나리오는 이 schema에 포함하지 않는다.
-
-실행 계획 JSON은 `schema_version`, `experiment: {id}`, `infrastructure`,
-검증된 `profile`, `dataset: {id, test_case_count}`, `sources`를 가진다.
-`sources`에는 experiment/profile/dataset 각각의 절대 path와 원본 byte의 SHA-256을 남긴다.
-파일명만 같은 수정된 입력과 revision이 다른 구성을 구분한다. 검증한 입력과 해석한
-Dataset snapshot을 실행 끝까지 재사용하고 결과 작성 시 원본 파일을 다시 읽지 않는다. 환경변수 치환을 마친
-Profile을 계획에 포함하며 target URL의 credential/userinfo는 기존 검증으로 거절한다.
-유한하지 않은 수치와 잘못된 중첩 object 타입은 참조 Profile 전체에서도 ConfigurationError로
-거절한다. 계획은 실행 전에 확정하고 실행 중 수정하지 않는다. dry-run은 API/AWS/DB/k6를 호출하지 않으며
-결과 디렉터리에 원본 입력 세 개와 `execution-plan.json`만 남긴다.
-
-### 관측값 대조
-
-ECS snapshot은 `ecs.worker`, 선택적 `ecs.api`를 구분한다. 각 service의
-active task definition과 desired/running/pending/rollout 상태를 읽어 해당 expected와 대조한다.
-Worker 동시성은 Worker의 실제 container environment에서 읽는다. API의 capacity를
-Worker snapshot으로 대신하지 않는다. RDS/SageMaker의 식별·구성값도 지정된 expected와
-대조한다. instance count/endpoint 상태는 준비 완료 여부까지 확인한다.
-
-manifest의 Worker/RDS/SageMaker 식별자는 capacity 조회와 CloudWatch dimension의 유일한
-입력이며 자원 식별과 기대 capacity를 환경변수로 받지 않는다. API 지표를 추가할 경우 Worker 지표와 역할이 다른 ID를 사용한다.
-source/DLQ queue URL·QueueName과 API base URL 등 실행 연결 입력은 기존 배포 환경 입력을
-계속 사용한다. 이런 연결 입력을 capacity preset이나 가짜 metric으로 추정하지 않는다.
-설정 불일치·조회 실패·미완료 rollout은 seed/k6 전에 명확한 expected/actual 차이로 중단한다.
-
-### Workload와 튜플
-
-기존 ramp_up_seconds/duration_seconds 형식에 더해, Profile workload에 설정 기반 `stages`를
-허용한다. stages가 있으면 위 두 duration 입력과 혼용하지 않는다.
+시나리오 workload는 단일 목표(`ramp_up_seconds`/`duration_seconds`)와 설정 기반
+`stages` 형식을 지원한다. `stages`는 `ramp_up_seconds`/`duration_seconds`와 혼용하지 않는다.
 
 ```yaml
 concurrent_test_runs: 2  # configured stage target의 최댓값
@@ -142,82 +64,50 @@ completion_timeout_seconds: 10
 polling_interval_seconds: 0.1
 ```
 
-각 stage의 duration은 유한한 양수, target은 0 이상의 정수다. stage는 비어 있지 않아야 하고
-최소 하나의 양수 target이 필요하다. workload.concurrent_test_runs는 target의 최댓값과
-같아야 한다. 기존 단일 target 경로에서는 종전 의미와 같다. 실험 튜플의 C는 관측된
-실사용자 수가 아니라 이 **최대 configured VU target**이다. 전체 부하 곡선과 그 의미를
-결과에 함께 저장한다. 한 VU는 하나의 비동기 TestRun 완료를 기다리는 현재 모델을 유지한다.
-각 테스트 유형은 이름별 분기 대신 같은 schema의 다른 설정으로 표현한다. 단계형 경로에서
-`gracefulRampDown`은 VU 수를 줄일 때 종료할 VU의 진행 중 iteration을 기다리는 최대 시간이고,
-`gracefulStop`은 시나리오 전체 종료 시 진행 중 iteration을 기다리는 최대 시간이다.
-단계형 `gracefulRampDown`과 공통 `gracefulStop`은
-`completion_timeout_seconds + max(1, ceil(polling_interval_seconds))`초로 설정한다.
-추가 여유는 완료 timeout 직후 실패 판정과 지표 기록을 마칠 시간을 주기 위한 것이다.
-유예 시간 내 완료를 보장하지 않으며, 시간이 만료되면 k6가 진행 중 iteration을 강제 중단할 수 있다.
-interrupted iteration이 남으면 별도 기록하고 단계형 경로에서 유효한 완료 측정으로 판정하지 않는다.
-기존 `ramp_up_seconds`/`duration_seconds` 경로의 `gracefulRampDown`은 `0s`를 유지한다.
-실제 종료 시간은 이 grace 때문에 선언된 부하 구간보다 길 수 있다.
+- 각 stage의 `duration_seconds`는 유한한 양수, `concurrent_test_runs`는 0 이상의 정수다.
+- `stages`는 비어 있지 않아야 하고 최소 하나의 양수 target이 필요하며, 최상위
+  `workload.concurrent_test_runs`는 stage target의 최댓값과 같아야 한다.
+- 튜플의 `C`는 관측된 동시 사용자 수가 아니라 **최대 configured VU target**이다.
+  한 VU는 하나의 비동기 TestRun 완료를 기다린다.
+- Backend Runner 결과는 `(C, T)` (`concurrent_test_runs`, `test_case_count`)를 기록한다.
+  인프라의 Worker 동시성 `W`를 결합해 `(W, C, T)`를 완성하는 책임은
+  [ADR 0017](0017-performance-runner-infrastructure-boundary.md)에 따라 IaC가 소유한다.
+- 각 테스트 유형은 이름별 분기 대신 같은 schema의 다른 설정으로 표현한다.
+- 단계형 경로에서 `gracefulRampDown`은 VU 수를 줄일 때 진행 중 iteration을 기다리는 최대 시간이고,
+  `gracefulStop`은 시나리오 전체 종료 시 진행 중 iteration을 기다리는 최대 시간이다.
+  단계형 `gracefulRampDown`과 공통 `gracefulStop`은
+  `completion_timeout_seconds + max(1, ceil(polling_interval_seconds))`초로 설정한다.
+  추가 여유는 완료 timeout 직후 실패 판정과 지표 기록을 마칠 시간을 주기 위한 것이다.
+  유예 시간 내 완료를 보장하지 않으며, 시간이 만료되면 k6가 진행 중 iteration을 강제 중단할 수 있다.
+- `interrupted` iteration이 남으면 결과에 별도 기록하고 단계형 경로의
+  `completion.iterations` 판정에서 유효한 완료 측정으로 인정하지 않는다.
+  단일 target(`ramp_up_seconds`/`duration_seconds`) 경로의 `gracefulRampDown`은 `0s`다.
+- 앱 수준 acceptance와 k6 exit `99`의 측정 FAIL 의미를 사용한다. 임의의 한계 지점이나 원인은
+  자동 단정하지 않고, 목표값은 실행 전에 확정한다.
 
-기존 acceptance schema와 k6 exit 99의 측정 FAIL 의미를 유지한다. 검증 fixture에는
-각 시나리오의 사전 고정된 기준을 사용한다. 운영 오류율과 한계/회복 판정의 실제 수치는
-인프라와 사용자 모델이 생긴 뒤 정한다. 지금 구현은 임의의 한계 지점·원인을 자동 단정하지 않는다.
+### 실패 진단 자료와 종료 코드
 
-### 결과와 오류
-
-완료 결과의 `started_at`, `finished_at`, `revisions`, `profile`, `dataset`, `acceptance`와
-파일명은 실제 분석 소비처를 위해 유지한다. 기존 `result.experiment`는 (W,C,T)
-객체로 유지하고 manifest 식별 정보는 `result.execution_plan.experiment` 아래에 둔다. 결과에 schema_version=2와 해석된 실행 계획,
-인프라 구성 ID/revision, 시나리오 ID/type과 입력 출처를 추가한다. metric이 수집되지
-않은 경우를 실제 정상 metric으로 채우지 않는다.
-
-오류는 완료 결과로 위장하지 않고 별도 `failure.json`에 기록한다. 최소한
-schema_version=1, run_id, status=ERROR, phase, error(type/message), available_artifacts,
-preservation_errors와 확보된 입력/revision을 남긴다. 원래 실패를 보존 실패로 덮어쓰지 않는다.
-완료 S3 upload의 필수 파일 검증은 유지하고, 부분 upload는 별도 상태/저장 경로로 구분한다.
-새 schema_version=2 결과는 모든 완료 파일 뒤에 upload-complete.json을 마지막으로 게시한다.
-분석 소비처는 새 결과의 완료 표식을 확인한다. 실제 소비 중인 과거 schema-less 결과는
-종전 필수 파일 검증으로 읽되 새 결과의 누락 표식을 legacy로 간주하지 않는다.
-측정 이후 upload만 실패하면 로컬 result의 성능 PASS/FAIL은 그대로 두고 별도 failure.json에
-phase=upload를 남긴다. 입력 검증 이전에 최소 run ID·단계를 마련하고, 결과 디렉터리 충돌은
-기존 파일을 덮어쓰지 않는다. 보존 자체가 실패하면 stderr에 원래 실패와 보존 실패를 함께 남긴다.
-
-## Alternatives
-
-1. 환경변수·CLI만 확장: 기존 연계는 쉽지만 여러 입력의 조합과 실제 revision을 한 번에 검토·보존하기 어렵다.
-2. workload Profile에 CPU/memory/tier까지 추가: 한 파일은 간단하지만 기존 승인된 소유권을 깨므로 선택하지 않는다.
-3. 단일 manifest + 기존 Profile/Dataset 참조: 새 입력 검증이 필요하지만 소유권과 재현성을 함께 유지하므로 채택한다.
+- 종료 코드: `0` 측정 PASS 또는 `--dry-run`, `1` 측정 FAIL(k6 threshold exit `99` 포함), `2` 실행 오류.
+- 오류는 완료 결과로 위장하지 않고 별도 `failure.json`에 기록한다.
+- `failure.json`은 `schema_version: 1`, `run_id`, `status: "ERROR"`, `phase`(`preflight`, `seed`, `k6`, `report`),
+  `started_at`, `failed_at`, `error`(`type`, `message`, optional `cause`), 확보된 `inputs`,
+  `available_artifacts`, `preservation_errors`를 남긴다.
+- 미생성 파일은 임의로 채우지 않으며, 이미 존재하는 `--result-dir`는 덮어쓰지 않는다.
+- 입력 검증 이전에 fallback `run_id`와 최소 컨텍스트를 마련해 조기 설정 오류도 기록한다.
+- 예외 메시지와 입력 기록 시 URL userinfo, Bearer token, secret/key/password 패턴을 마스킹한다.
+  보존 자체가 실패해도 원래 실패를 덮어쓰지 않고 `stderr`에 원래 실패와 보존 실패를 함께 알린다.
+- 결과의 인프라 식별, 인프라 지표 및 원격 결과 보존은
+  [ADR 0017](0017-performance-runner-infrastructure-boundary.md)을 따른다.
 
 ## Consequences
 
-단일 manifest로 입력 조합과 revision을 검토하고 재현할 수 있다. 반면 manifest와
-참조 파일 사이의 검증·snapshot 보존이 추가로 필요하다. manifest가 유일한 입력이므로
-실제 환경에서 실행하려면 그 환경의 자원과 일치하는 manifest가 있어야 한다. 실제 dev manifest와
-Runner host 실행 절차·환경 키 전환은 IaC 후속 작업(haeinChoe/guardbench-iac#11)으로 남긴다.
-DB migration이나 인프라 자원 변경은 없다.
+단일 시나리오·Dataset·연결 입력과 SHA-256 스냅샷으로 실행 조건을 재현하고,
+측정 FAIL(`1`)과 도구/API 실행 오류(`2`)를 명확히 분리해 진단할 수 있다.
+인프라 구성과 관측·보존 경계는 [ADR 0017](0017-performance-runner-infrastructure-boundary.md)에서 독립 관리한다.
 
 ## Validation
 
-- manifest schema/참조/finite 수치/중복 입력을 검증하고 dry-run에서 외부 호출이 없음을 검사한다.
-- API/Worker/SageMaker/RDS 차이와 미완료 상태에서 seed/workload가 차단되는지 검사한다.
-- 선택한 테스트 유형의 선언된 k6 stages와 tuple 의미를 검사한다.
-- 결과의 입력 출처와 strict complete/partial artifact 처리를 검사한다.
-- Runner와 k6 연결, 정상·불일치·중간 오류, 프로세스 정리를 검증한다.
-  테스트 대역을 사용하는 검증과 실환경 통합 검증의 결과를 구분한다.
-
-## Amendments
-
-### 2026-11-21 — experiment manifest 단일 입력
-
-결정권자 지시(#21 결정 코멘트)로 Runner 실행 입력을 experiment manifest 하나로 통일한다.
-Runner는 필수 `--experiment`만 받고, 자원 식별과 기대 capacity는 manifest의
-`infrastructure.expected`에서만 읽으며 ECS snapshot은 역할별(`ecs.worker`, 선택적 `ecs.api`)로 남긴다.
-`bin/verify-runtime`은 검증 fixture manifest의 dry-run으로 확인한다. IaC Runner host 절차 전환은
-haeinChoe/guardbench-iac#11에서 다룬다. `ramp_up_seconds`/`duration_seconds` workload 형식과
-Dataset 파일은 그대로 사용한다.
-
-### 2026-11-22 — 허용 테스트 유형 축소
-
-결정권자 지시로 Runner 입력 검증의 허용 `test.type`을 이 문서가 정한 `SMOKE`, `STRESS`,
-`SOAK`로 맞춘다(#21). 다른 유형은 설정 오류로 거부한다. 검증 fixture는 세 유형 중 하나를 쓰고,
-이름에 실제 인프라 구성 수준이나 허용되지 않는 유형으로 읽히는 표현을 쓰지 않는다.
-인프라 구성 이름은 IaC 단계에서 정한다.
+- 시나리오/Dataset 스키마, 유한 수치, URL 검증과 `--dry-run` 무호출 경계를 검사한다.
+- `SMOKE`/`STRESS`/`SOAK` 유형, 선언된 k6 stages, `gracefulRampDown`/`gracefulStop`, `(C, T)` 의미를 검사한다.
+- 완료 결과(`result.json`, `report.md`)의 식별·해시·미수집 metric 비생성(`null`)과 오류(`failure.json`) 분리를 검사한다.
+- 실제 Runner와 실제 k6, 모의 HTTP API를 연결한 로컬 E2E로 정상 완료(`0`)·측정 FAIL(`1`)·실행 오류(`2`) 및 프로세스 정리를 검증한다.
