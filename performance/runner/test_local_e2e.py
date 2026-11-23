@@ -40,6 +40,15 @@ class LocalE2EHarnessTest(unittest.TestCase):
         self.assertFalse(captured["server"].is_running)
         self.assertFalse(outcome.work_dir.exists())
 
+    def test_k6_iteration_limit_rejects_idle_vu_busy_loop(self):
+        workload = {"concurrent_test_runs": 2, "ramp_up_seconds": 0, "duration_seconds": 1}
+        limit = local_e2e.max_expected_k6_iterations(workload, started=2)
+        self.assertEqual(8, limit)
+        self.assertLessEqual(4, limit)
+        self.assertGreater(597935, limit)
+        staged = {"concurrent_test_runs": 2, "stages": [{"duration_seconds": 1}, {"duration_seconds": 2}]}
+        self.assertEqual(2 + 2 * (3 + 2), local_e2e.max_expected_k6_iterations(staged, started=2))
+
     @unittest.skipUnless(local_e2e.resolve_k6_binary(), "actual k6 binary is not installed")
     def test_local_e2e_harness_executes_all_three_scenarios_with_real_k6(self):
         stdout = io.StringIO()

@@ -33,6 +33,8 @@ MOCK_TARGET_REVISION = "fixture-v1"
 _RUN_DETAIL_PATH = re.compile(r"^/api/v1/test-runs/([0-9]+)$")
 _RUN_RESULTS_PATH = re.compile(r"^/api/v1/test-runs/([0-9]+)/results$")
 _PRESERVED_HOST_ENV_KEYS = ("PATH", "HOME", "TMPDIR", "K6_BIN")
+# Must match IDLE_SLEEP_SECONDS in performance/k6/test-run.js.
+K6_IDLE_SLEEP_SECONDS = 1
 
 
 def resolve_k6_binary() -> str | None:
@@ -331,6 +333,23 @@ class ScenarioResult:
     work_dir: Path
 
 
+def max_expected_k6_iterations(workload: dict[str, Any], started: int) -> float:
+    """Upper bound of the default k6 `iterations` metric for a capped-iteration workload.
+
+    Every started iteration is a real one. After reaching max_iterations_per_vu, a VU runs
+    one empty iteration per K6_IDLE_SLEEP_SECONDS for the rest of the workload. Each VU gets
+    at most duration / sleep of them, +1 for the iteration straddling the end (it finishes
+    within graceful stop) and +1 slack for scheduling jitter. A busy loop exceeds this by
+    orders of magnitude (hundreds of thousands vs. single digits).
+    """
+    stages = workload.get("stages")
+    if stages:
+        duration = sum(stage["duration_seconds"] for stage in stages)
+    else:
+        duration = workload.get("ramp_up_seconds", 0) + workload["duration_seconds"]
+    return started + workload["concurrent_test_runs"] * (duration / K6_IDLE_SLEEP_SECONDS + 2)
+
+
 def _run_normal_completion(scenario_path: Path, dataset_path: Path, result_dir: Path) -> str:
     with LocalMockApiServer() as server, _isolated_harness_environment():
         stdout_buf = io.StringIO()
@@ -360,6 +379,13 @@ def _run_normal_completion(scenario_path: Path, dataset_path: Path, result_dir: 
             "model": MOCK_TARGET_MODEL,
             "revision": MOCK_TARGET_REVISION,
         }
+        summary_metrics = json.loads((result_dir / "k6-summary.json").read_text(encoding="utf-8"))["metrics"]
+        started = int(summary_metrics["test_run_iterations_started"]["count"])
+        k6_iterations = summary_metrics["iterations"]["count"]
+        iteration_limit = max_expected_k6_iterations(result["execution_plan"]["scenario"]["workload"], started)
+        assert k6_iterations <= iteration_limit, (
+            f"idle VUs appear to busy-loop: k6 iterations={k6_iterations} > limit {iteration_limit}"
+        )
         assert result["test_run_diagnostics"]["test_run_count"] >= 1
         assert result["test_run_diagnostics"]["failed_test_run_ids"] == []
         for marker in (
