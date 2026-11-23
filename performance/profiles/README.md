@@ -32,6 +32,7 @@ acceptance:
     failure_rate: 0
 ```
 
+- `max_iterations_per_vu`가 양수이면 상한에 도달한 VU는 남은 stage 시간 동안 1초 간격으로 대기하며 요청을 보내지 않는다. 0이면 상한이 없다.
 - `target`은 `type: HTTP_ENDPOINT`만 허용한다. URL, model, revision은 시나리오 YAML에 두지 않는다.
 - `acceptance`는 앱 수준 기준(`api.create_latency_ms`, `api.error_rate`, `completion.max_seconds`, `completion.failure_rate`)만 허용하며 알 수 없는 키는 거부한다.
 - 검증용 fixture 시나리오는 `performance/fixtures/profiles/`에 있다. 이 파일의 수치는 기능 검증용이며 실제 성능 목표로 해석하지 않는다.
