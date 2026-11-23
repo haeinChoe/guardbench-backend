@@ -7,6 +7,7 @@ const suiteId = __ENV.PERF_SUITE_ID;
 const maxIterationsPerVu = Number(__ENV.PERF_MAX_ITERATIONS_PER_VU || 0);
 const completionTimeoutSeconds = Number(__ENV.PERF_COMPLETION_TIMEOUT_SECONDS || 300);
 const pollingIntervalSeconds = Number(__ENV.PERF_POLLING_INTERVAL_SECONDS || 2);
+const IDLE_SLEEP_SECONDS = 1;
 
 export const iterationsStarted = new Counter('test_run_iterations_started');
 export const iterationsCompleted = new Counter('test_run_iterations_completed');
@@ -108,6 +109,9 @@ export const options = {
 
 export default function () {
   if (maxIterationsPerVu > 0 && __ITER >= maxIterationsPerVu) {
+    // ramping-vus keeps assigning iterations to a VU until its stage ends, so an empty
+    // iteration would spin at full speed. Sleep to keep idle VUs from consuming CPU.
+    sleep(IDLE_SLEEP_SECONDS);
     return;
   }
   iterationsStarted.add(1);
