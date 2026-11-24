@@ -139,7 +139,7 @@ class PerformanceRunnerTest(unittest.TestCase):
         k6_version = (ROOT / "k6" / "VERSION").read_text(encoding="utf-8").strip()
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
-        self.assertEqual("0.55.0", k6_version)
+        self.assertEqual("2.3.0", k6_version)
         self.assertIn("PyYAML", requirements)
 
 
