@@ -53,7 +53,8 @@ Dataset은 무엇을 실행할지, 시나리오는 어떤 부하 패턴과 앱 �
 
 ## 설치와 실행
 
-필수 도구는 Python 3.11 이상과 [performance/k6/VERSION](../performance/k6/VERSION)에 선언된 버전(`0.55.0`)의 `k6`다.
+필수 도구는 Python 3.11 이상과 [performance/k6/VERSION](../performance/k6/VERSION)에 선언된 버전(`2.3.0`)의 `k6`다.
+k6 버전은 발행 후 2주 이상 지난 최신 안정 release로 정하고, 올리는 PR에 `--summary-export` 형식과 종료 코드 확인 결과를 남긴다.
 
 ```bash
 python3 -m venv .venv
