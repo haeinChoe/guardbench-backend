@@ -9,9 +9,9 @@ from typing import Any
 def _metric(summary: dict[str, Any], name: str) -> dict[str, Any]:
     """Return metric values from both k6 summary-export shapes.
 
-    k6 0.55 writes metric aggregates directly below ``metrics[name]`` while
-    some fixtures use a nested ``values`` object. Accept both without masking
-    missing metrics.
+    ``k6 run --summary-export`` writes metric aggregates directly below
+    ``metrics[name]`` while some fixtures use a nested ``values`` object.
+    Accept both without masking missing metrics.
     """
     metric = summary.get("metrics", {}).get(name, {})
     if not isinstance(metric, dict):
